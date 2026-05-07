@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Notes App</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero" aria-labelledby="app-title">
+        <p class="eyebrow">Local-first workspace</p>
+        <h1 id="app-title">Notes</h1>
+        <p class="subtitle">
+          Capture ideas, update them anytime, and find what matters fast. Your notes stay in this browser with localStorage.
+        </p>
+      </section>
+
+      <section class="panel composer" aria-labelledby="composer-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Write</p>
+            <h2 id="composer-title">Add a note</h2>
+          </div>
+          <button id="cancel-edit" class="secondary hidden" type="button">Cancel edit</button>
+        </div>
+
+        <form id="note-form" autocomplete="off">
+          <label for="note-title">Title</label>
+          <input id="note-title" name="title" type="text" placeholder="Meeting plan" maxlength="80" required />
+
+          <label for="note-body">Note</label>
+          <textarea id="note-body" name="body" rows="6" placeholder="Write a quick thought..." required></textarea>
+
+          <button id="submit-note" class="primary" type="submit">Add note</button>
+        </form>
+      </section>
+
+      <section class="panel notes-panel" aria-labelledby="notes-title">
+        <div class="panel-heading notes-toolbar">
+          <div>
+            <p class="eyebrow">Browse</p>
+            <h2 id="notes-title">Saved notes</h2>
+          </div>
+          <span id="note-count" class="note-count">0 notes</span>
+        </div>
+
+        <label class="search-label" for="search-notes">Search notes</label>
+        <input id="search-notes" class="search-input" type="search" placeholder="Search by title or content" />
+
+        <div id="notes-list" class="notes-list" aria-live="polite"></div>
+        <p id="empty-state" class="empty-state">No notes yet. Add your first note to get started.</p>
+      </section>
+    </main>
+
+    <template id="note-template">
+      <article class="note-card">
+        <div class="note-card-header">
+          <h3></h3>
+          <time></time>
+        </div>
+        <p></p>
+        <div class="note-actions">
+          <button class="secondary edit-note" type="button">Edit</button>
+          <button class="danger delete-note" type="button">Delete</button>
+        </div>
+      </article>
+    </template>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>
