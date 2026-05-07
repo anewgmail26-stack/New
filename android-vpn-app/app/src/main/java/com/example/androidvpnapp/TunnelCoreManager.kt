@@ -6,105 +6,71 @@ import android.util.Log
 import java.io.File
 
 class TunnelCoreManager(private val context: Context) {
-    private var status = CoreStatus.DISCONNECTED
-    private var generatedConfigFile: File? = null
+    private val coreBridge = CoreBridge(context.applicationContext)
 
-    fun getStatus(profile: TunnelProfile? = ConfigStore(context).loadSelectedProfile()): CoreStatus = when {
-        profile == null -> CoreStatus.CONFIG_MISSING
-        !areNativeCoreFilesInstalled() -> CoreStatus.CORE_NOT_INSTALLED
-        status == CoreStatus.CONNECTING || status == CoreStatus.CONNECTED -> status
-        else -> CoreStatus.READY
-    }
+    fun getStatus(profile: TunnelProfile? = ConfigStore(context).loadSelectedProfile()): CoreStatus =
+        if (profile == null) CoreStatus.CONFIG_MISSING else coreBridge.getStatus(profile).toManagerStatus()
 
     fun getStatusLabel(profile: TunnelProfile? = ConfigStore(context).loadSelectedProfile()): String = getStatus(profile).label
 
-    fun areNativeCoreFilesInstalled(): Boolean {
-        val coreRuntimeInstalled = nativeLibraryExists(XRAY_LIBRARY) ||
-            nativeLibraryExists(V2RAY_LIBRARY) ||
-            assetCoreExists(XRAY_LIBRARY) ||
-            assetCoreExists(V2RAY_LIBRARY)
-        val tunRoutingInstalled = nativeLibraryExists(TUN2SOCKS_LIBRARY) || assetCoreExists(TUN2SOCKS_LIBRARY)
-        return coreRuntimeInstalled && tunRoutingInstalled
+    fun getLastError(): String? = coreBridge.getLastError()
+
+    fun areNativeCoreFilesInstalled(): Boolean = coreBridge.areRequiredLibrariesInstalled()
+
+    fun isNativeRuntimeStartAvailable(): Boolean = coreBridge.isNativeRuntimeStartAvailable()
+
+    fun describeNativeCoreInstall(): String {
+        val install = coreBridge.detectNativeLibraries()
+        val core = install.core?.displayPath ?: "Missing libxray.so/libv2ray.so"
+        val tun2socks = install.tun2socks?.displayPath ?: "Missing libtun2socks.so"
+        return "Core: $core\nTUN routing: $tun2socks"
     }
 
-    fun generateAndSaveConfig(profile: TunnelProfile?): Result<File> {
-        if (profile == null) {
-            status = CoreStatus.CONFIG_MISSING
-            return Result.failure(IllegalStateException(CoreStatus.CONFIG_MISSING.label))
-        }
-
-        return runCatching {
-            val configFile = File(context.filesDir, GENERATED_CONFIG_FILE)
-            configFile.writeText(profile.toXrayJson())
-            generatedConfigFile = configFile
-            configFile
-        }
-    }
+    fun generateAndSaveConfig(profile: TunnelProfile?): Result<File> = coreBridge.generateAndSaveConfig(profile)
 
     fun start(profile: TunnelProfile?, vpnInterface: ParcelFileDescriptor?): Result<Unit> {
         if (profile == null) {
-            status = CoreStatus.CONFIG_MISSING
             return Result.failure(IllegalStateException(CoreStatus.CONFIG_MISSING.label))
         }
 
-        val configResult = generateAndSaveConfig(profile)
-        if (configResult.isFailure) {
-            return Result.failure(configResult.exceptionOrNull() ?: IllegalStateException(CoreStatus.CONFIG_MISSING.label))
+        val preflightStatus = getStatus(profile)
+        if (preflightStatus == CoreStatus.CORE_NOT_INSTALLED || preflightStatus == CoreStatus.TUN2SOCKS_NOT_INSTALLED) {
+            return Result.failure(IllegalStateException(preflightStatus.label))
         }
 
-        if (!areNativeCoreFilesInstalled()) {
-            status = CoreStatus.CORE_NOT_INSTALLED
-            return Result.failure(IllegalStateException(CoreStatus.CORE_NOT_INSTALLED.label))
+        val result = coreBridge.start(profile, vpnInterface)
+        if (result.isFailure) {
+            Log.w(TAG, "CoreBridge refused to start: ${coreBridge.getLastError()}")
         }
-
-        status = CoreStatus.CONNECTING
-        val configFile = configResult.getOrThrow()
-        // TODO: Connect the Android VpnService TUN file descriptor to the native routing stack.
-        // TODO: Launch libxray.so or libv2ray.so with configFile.absolutePath when trusted binaries are packaged.
-        // TODO: Attach libtun2socks.so to bridge the TUN interface to the local Xray/V2Ray SOCKS inbound.
-        // TODO: Stream native Xray/V2Ray/tun2socks logs into app-visible diagnostics before enabling real traffic claims.
-        Log.i(
-            TAG,
-            "Prepared native tunnel start. Config=${configFile.absolutePath}; TUN present=${vpnInterface != null}."
-        )
-        status = CoreStatus.CONNECTED
-        return Result.success(Unit)
+        return result
     }
 
-    fun stop() {
-        if (status == CoreStatus.CONNECTING || status == CoreStatus.CONNECTED) {
-            Log.i(TAG, "Stopping native tunnel placeholder state.")
-        }
-        // TODO: Stop the real Xray/V2Ray process and tun2socks routing layer when native execution is added.
-        status = CoreStatus.DISCONNECTED
-    }
+    fun stop() = coreBridge.stop()
 
-    fun isRunning(): Boolean = status == CoreStatus.CONNECTING || status == CoreStatus.CONNECTED
+    fun isRunning(): Boolean = coreBridge.isRunning()
 
-    private fun nativeLibraryExists(fileName: String): Boolean =
-        File(context.applicationInfo.nativeLibraryDir, fileName).isFile
-
-    private fun assetCoreExists(fileName: String): Boolean = try {
-        context.assets.open("core/$fileName").close()
-        true
-    } catch (_: Exception) {
-        false
+    private fun CoreBridge.Status.toManagerStatus(): CoreStatus = when (this) {
+        CoreBridge.Status.MissingCore -> CoreStatus.CORE_NOT_INSTALLED
+        CoreBridge.Status.MissingTun2Socks -> CoreStatus.TUN2SOCKS_NOT_INSTALLED
+        CoreBridge.Status.Ready -> CoreStatus.READY
+        CoreBridge.Status.Starting -> CoreStatus.CONNECTING
+        CoreBridge.Status.Running -> CoreStatus.CONNECTED
+        CoreBridge.Status.Stopped -> CoreStatus.DISCONNECTED
+        CoreBridge.Status.Error -> CoreStatus.ERROR
     }
 
     enum class CoreStatus(val label: String) {
-        CORE_NOT_INSTALLED("Core not installed"),
+        CORE_NOT_INSTALLED("Missing Xray/V2Ray core"),
+        TUN2SOCKS_NOT_INSTALLED("Missing tun2socks"),
         CONFIG_MISSING("Config missing"),
         READY("Ready"),
-        CONNECTING("Connecting"),
-        CONNECTED("Connected"),
-        DISCONNECTED("Disconnected")
+        CONNECTING("Starting"),
+        CONNECTED("Running"),
+        DISCONNECTED("Stopped"),
+        ERROR("Core error")
     }
 
     companion object {
         private const val TAG = "TunnelCoreManager"
-        private const val GENERATED_CONFIG_FILE = "xray-generated-config.json"
-        private const val XRAY_LIBRARY = "libxray.so"
-        private const val V2RAY_LIBRARY = "libv2ray.so"
-        private const val TUN2SOCKS_LIBRARY = "libtun2socks.so"
     }
 }

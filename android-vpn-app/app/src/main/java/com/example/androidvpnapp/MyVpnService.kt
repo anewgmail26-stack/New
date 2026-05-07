@@ -46,7 +46,9 @@ class MyVpnService : VpnService() {
         }
 
         val coreStatus = tunnelCoreManager.getStatus(profile)
-        if (coreStatus == TunnelCoreManager.CoreStatus.CORE_NOT_INSTALLED) {
+        if (coreStatus == TunnelCoreManager.CoreStatus.CORE_NOT_INSTALLED ||
+            coreStatus == TunnelCoreManager.CoreStatus.TUN2SOCKS_NOT_INSTALLED
+        ) {
             Log.w(TAG, "Cannot start VPN: ${coreStatus.label}.")
             stopSelf()
             return
@@ -55,8 +57,8 @@ class MyVpnService : VpnService() {
         startForeground(NOTIFICATION_ID, buildNotification())
 
         try {
-            // This creates a real Android VPN TUN interface. Traffic forwarding requires the native core
-            // integration described in TunnelCoreManager; until then the tunnel is a safe placeholder.
+            // This creates a real Android VPN TUN interface. Traffic forwarding requires CoreBridge
+            // to hand this file descriptor to a real tun2socks/native routing adapter.
             val builder = Builder()
                 .setSession(getString(R.string.app_name))
                 .addAddress("10.10.0.2", 32)
@@ -82,7 +84,7 @@ class MyVpnService : VpnService() {
                 return
             }
 
-            Log.i(TAG, "VPN interface established and native core manager prepared.")
+            Log.i(TAG, "VPN interface established and native core manager is running.")
         } catch (error: Exception) {
             Log.e(TAG, "Failed to establish VPN interface.", error)
             disconnect()

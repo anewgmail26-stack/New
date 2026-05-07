@@ -9,8 +9,8 @@ The app is still a starter integration project. It can request VPN permission, s
 ## Current limitations
 
 - The app does **not** include Xray, V2Ray, tun2socks, or other native proxy/VPN core binaries.
-- `TunnelCoreManager` checks for native core files, generates app-private Xray JSON, and keeps start/stop methods ready for real native execution.
-- `MyVpnService` creates an Android TUN interface, but traffic forwarding is not connected to a native core yet.
+- `CoreBridge` and `TunnelCoreManager` check for packaged native core files, generate app-private Xray JSON, and expose safe start/stop seams for a real native runtime.
+- `MyVpnService` creates an Android TUN interface, but traffic forwarding is not connected to a native core yet because no real JNI/AAR start adapter or executable wrapper is bundled.
 - Upload/download counters are UI placeholders until real traffic accounting is connected.
 - The connected/disconnected UI reflects the app button flow and is not a full service-state observer yet.
 - Production VPN apps still need robust routing, DNS handling, lifecycle recovery, split tunneling rules, battery optimization handling, logging, crash recovery, and security hardening.
@@ -134,28 +134,31 @@ The repository includes `.github/workflows/android-build.yml`, which builds the 
 6. Download the `android-vpn-app-debug-apk` artifact from the workflow run page.
 7. Install the APK on Android after allowing installation from unknown sources for the browser or file manager used to open it.
 
-Remember: this APK prepares native-core integration paths and reports missing core files. It does not provide real Xray/V2Ray traffic proxying until real native core binaries and tun2socks routing are implemented.
+Remember: this APK prepares native-core integration paths and reports missing core files. It does not provide real Xray/V2Ray traffic proxying until real native core binaries plus tun2socks routing and a real native start adapter are implemented.
 
-## How to add real Xray/V2Ray native core binaries later
+## How to add real Xray/V2Ray native core support
 
-1. Build or obtain trusted Xray/V2Ray/tun2socks binaries for the Android ABIs you plan to support, such as:
-   - `arm64-v8a`
-   - `armeabi-v7a`
-   - `x86_64`
-2. Add the binaries under one of the prepared app paths:
-   - `app/src/main/jniLibs/arm64-v8a/` or `app/src/main/jniLibs/armeabi-v7a/` for packaged native libraries, or
-   - `app/src/main/assets/core/` for verified runtime assets copied to app-private storage at runtime.
-   The code recognizes `libxray.so`, `libv2ray.so`, and `libtun2socks.so`.
-3. Update `TunnelCoreManager` to:
-   - write the selected/generated JSON config to an app-private file,
-   - copy or extract the matching ABI binary when needed,
-   - mark executable assets executable when appropriate,
-   - start the native core process with the generated config path,
-   - bridge the `VpnService` TUN file descriptor into Xray/V2Ray/tun2socks,
-   - monitor process health and logs,
-   - stop the process when the VPN disconnects.
-4. Update `MyVpnService` routing and DNS behavior to match the chosen core integration approach.
-5. Review Xray/V2Ray/tun2socks licensing, security, and distribution requirements before shipping binaries.
+`CoreBridge` is real-ready but intentionally conservative: it detects packaged native libraries and writes the generated Xray JSON, then refuses to claim a running tunnel until a real native start path exists. A `.so` file is a shared library, not a command-line executable; Android loads it from `jniLibs` into `applicationInfo.nativeLibraryDir`. To run traffic you must provide one of these real integration paths:
+
+1. **JNI/AAR wrapper path:** add a trusted Xray/V2Ray Android AAR or JNI wrapper that exposes documented start/stop APIs. Wire those APIs into `CoreBridge.NativeRuntimeAdapter`.
+2. **Executable path:** ship a trusted executable core binary and tun2socks executable using a compliant packaging/extraction approach, mark the copied executable file executable in app-private storage, then start it with the generated config path. Do not try to launch `libxray.so` directly with `ProcessBuilder`.
+
+Expected packaged library locations detected by the app are:
+
+- `app/src/main/jniLibs/arm64-v8a/libxray.so`
+- `app/src/main/jniLibs/armeabi-v7a/libxray.so`
+- `app/src/main/jniLibs/arm64-v8a/libv2ray.so`
+- `app/src/main/jniLibs/armeabi-v7a/libv2ray.so`
+- `app/src/main/jniLibs/arm64-v8a/libtun2socks.so`
+- `app/src/main/jniLibs/armeabi-v7a/libtun2socks.so`
+
+The app requires one Xray/V2Ray core (`libxray.so` or `libv2ray.so`) and one `libtun2socks.so` for the device ABI. The prepared ABI folders are `arm64-v8a` and `armeabi-v7a`; add more ABI folders only when the Gradle build and bridge detection are updated to support them.
+
+After adding real native artifacts, APK size will increase because native cores and tun2socks include compiled machine code for each ABI. Shipping both `arm64-v8a` and `armeabi-v7a` means the APK carries separate binaries for 64-bit and 32-bit ARM devices.
+
+Without both a real Xray/V2Ray core and TUN routing through tun2socks, the app remains non-functional for real traffic. It may create an Android VPN interface and foreground notification, but packets will not be proxied safely to the selected server.
+
+Before distributing binaries, review licenses for Xray-core, V2Ray-core, tun2socks, Go runtime dependencies, and any wrapper/AAR you include. Keep source notices and comply with redistribution terms. Do not commit placeholder or fake native binaries.
 
 ## Required Android permissions
 
