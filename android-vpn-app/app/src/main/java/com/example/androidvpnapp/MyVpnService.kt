@@ -38,9 +38,16 @@ class MyVpnService : VpnService() {
 
     private fun connect() {
         val configStore = ConfigStore(applicationContext)
-        val jsonConfig = configStore.loadV2RayConfig()
-        if (jsonConfig.isBlank()) {
-            Log.w(TAG, "Cannot start VPN: tunnel config is empty.")
+        val profile = configStore.loadSelectedProfile()
+        if (profile == null) {
+            Log.w(TAG, "Cannot start VPN: ${TunnelCoreManager.CoreStatus.CONFIG_MISSING.label}.")
+            stopSelf()
+            return
+        }
+
+        val coreStatus = tunnelCoreManager.getStatus(profile)
+        if (coreStatus == TunnelCoreManager.CoreStatus.CORE_NOT_INSTALLED) {
+            Log.w(TAG, "Cannot start VPN: ${coreStatus.label}.")
             stopSelf()
             return
         }
@@ -68,14 +75,14 @@ class MyVpnService : VpnService() {
                 return
             }
 
-            val result = tunnelCoreManager.start(jsonConfig, vpnInterface)
+            val result = tunnelCoreManager.start(profile, vpnInterface)
             if (result.isFailure) {
                 Log.e(TAG, "Cannot start tunnel core manager.", result.exceptionOrNull())
                 disconnect()
                 return
             }
 
-            Log.i(TAG, "VPN interface established with placeholder tunnel core.")
+            Log.i(TAG, "VPN interface established and native core manager prepared.")
         } catch (error: Exception) {
             Log.e(TAG, "Failed to establish VPN interface.", error)
             disconnect()

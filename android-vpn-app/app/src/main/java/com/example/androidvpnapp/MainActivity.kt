@@ -15,7 +15,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -23,7 +22,6 @@ import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
-import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -31,7 +29,6 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
-import org.json.JSONObject
 
 class MainActivity : Activity() {
     private lateinit var configStore: ConfigStore
@@ -48,9 +45,6 @@ class MainActivity : Activity() {
     private lateinit var payloadNameText: TextView
     private lateinit var payloadSubtitleText: TextView
 
-    private var configInput: EditText? = null
-    private var linkInput: EditText? = null
-    private var currentRawConfig = ""
 
     private val timerHandler = Handler(Looper.getMainLooper())
     private var connected = false
@@ -70,7 +64,6 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         configStore = ConfigStore(applicationContext)
-        currentRawConfig = configStore.loadV2RayConfig()
         buildUi()
         requestNotificationPermissionIfNeeded()
     }
@@ -391,84 +384,56 @@ class MainActivity : Activity() {
     }
 
     private fun showToolsDialog() {
+        val coreManager = TunnelCoreManager(applicationContext)
+        val coreStatus = coreManager.getStatusLabel(configStore.loadSelectedProfile())
+        val installText = if (coreManager.areNativeCoreFilesInstalled()) {
+            "Native core files found."
+        } else {
+            "Missing libxray.so/libv2ray.so and libtun2socks.so."
+        }
+
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(8), dp(20), 0)
         }
 
-        content.addView(TextView(this).apply {
-            text = "Import Config"
-            textSize = 18f
+        content.addView(toolSection(
+            title = "Core Status",
+            body = "$coreStatus\n$installText"
+        ))
+        content.addView(toolSection(
+            title = "Check Updates",
+            body = "Update checking will be connected to the release channel later."
+        ))
+        content.addView(toolSection(
+            title = "About My Tunnel Lite",
+            body = "My Tunnel Lite prepares built-in tunnel profiles for future Xray/V2Ray native core execution. Real VPN traffic requires native core and tun2socks integration."
+        ))
+
+        AlertDialog.Builder(this)
+            .setTitle("Tools")
+            .setView(content)
+            .setPositiveButton("Close", null)
+            .show()
+            .getButton(AlertDialog.BUTTON_POSITIVE)
+            .setTextColor(GREEN)
+    }
+
+    private fun toolSection(title: String, body: String): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(0, dp(8), 0, dp(12))
+        addView(TextView(this@MainActivity).apply {
+            text = title
+            textSize = 16f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(DARK)
         })
-        content.addView(TextView(this).apply {
-            text = "Paste a VLESS share link or raw JSON, then save it before connecting."
+        addView(TextView(this@MainActivity).apply {
+            text = body
             textSize = 13f
             setTextColor(GRAY)
-            setPadding(0, dp(4), 0, dp(10))
+            setPadding(0, dp(4), 0, 0)
         })
-
-        val vlessInput = EditText(this).apply {
-            hint = "Paste VLESS link"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            setSingleLine(false)
-            minLines = 2
-            background = rounded(Color.WHITE, GREEN_LIGHT, dp(1), dp(14))
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-        }
-        linkInput = vlessInput
-        content.addView(vlessInput, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { setMargins(0, 0, 0, dp(10)) })
-
-        val rawConfigInput = EditText(this).apply {
-            hint = "Paste VLESS/JSON"
-            setText(currentRawConfig)
-            minLines = 6
-            gravity = Gravity.TOP or Gravity.START
-            inputType = InputType.TYPE_CLASS_TEXT or
-                InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            background = rounded(Color.WHITE, GREEN_LIGHT, dp(1), dp(14))
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-        }
-        configInput = rawConfigInput
-        content.addView(rawConfigInput, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ))
-
-        content.addView(TextView(this).apply {
-            text = "Core status: Placeholder core ready"
-            textSize = 13f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(GREEN)
-            setPadding(0, dp(12), 0, 0)
-        })
-
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Tools")
-            .setView(content)
-            .setNegativeButton("Close", null)
-            .setPositiveButton("Save/Import", null)
-            .create()
-
-        dialog.setOnDismissListener {
-            configInput = null
-            linkInput = null
-        }
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(GREEN)
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                if (saveOrImportToolsConfig()) {
-                    dialog.dismiss()
-                }
-            }
-            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(GRAY)
-        }
-        dialog.show()
     }
 
     private fun refreshServerSpinner() {
@@ -476,6 +441,7 @@ class MainActivity : Activity() {
         val labels = servers.map { "${it.name}  •  ${it.host}:${it.port}" }
         serverSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
         val selectedIndex = servers.indexOfFirst { it.id == configStore.loadSelectedServerId() }.coerceAtLeast(0)
+        servers.getOrNull(selectedIndex)?.let { configStore.saveSelectedServerId(it.id) }
         serverSpinner.setSelection(selectedIndex)
         servers.getOrNull(selectedIndex)?.let { updateServerCard(it) }
     }
@@ -484,6 +450,7 @@ class MainActivity : Activity() {
         val labels = payloadTweaks.map { "${it.name}  •  ${it.mode}" }
         payloadSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
         val selectedIndex = payloadTweaks.indexOfFirst { it.id == configStore.loadSelectedPayloadId() }.coerceAtLeast(0)
+        payloadTweaks.getOrNull(selectedIndex)?.let { configStore.saveSelectedPayloadId(it.id) }
         payloadSpinner.setSelection(selectedIndex)
         payloadTweaks.getOrNull(selectedIndex)?.let { updatePayloadCard(it) }
     }
@@ -502,71 +469,9 @@ class MainActivity : Activity() {
         if (!::serverSpinner.isInitialized || !::payloadSpinner.isInitialized || !::dnsCheckbox.isInitialized) return
         val server = servers.getOrNull(serverSpinner.selectedItemPosition) ?: return
         val payload = payloadTweaks.getOrNull(payloadSpinner.selectedItemPosition) ?: return
-        val generated = TunnelProfile(server, payload, dnsCheckbox.isChecked).toInternalJson()
-        currentRawConfig = generated
-        val activeConfigInput = configInput
-        if (activeConfigInput != null && !activeConfigInput.hasFocus()) {
-            activeConfigInput.setText(generated)
-        }
-        configStore.saveV2RayConfig(generated)
-    }
-
-    private fun saveOrImportToolsConfig(): Boolean {
-        val pastedLink = linkInput?.text?.toString()?.trim().orEmpty()
-        if (pastedLink.isNotEmpty()) {
-            return importVlessLink(pastedLink)
-        }
-        return saveRawJsonConfig(configInput?.text?.toString().orEmpty())
-    }
-
-    private fun saveRawJsonConfig(config: String = currentRawConfig): Boolean {
-        val pastedConfig = config.trim()
-        if (pastedConfig.isEmpty()) {
-            configInput?.error = "Config cannot be empty."
-            showToast("Config cannot be empty.")
-            return false
-        }
-
-        try {
-            JSONObject(pastedConfig)
-        } catch (error: Exception) {
-            configInput?.error = "Pasted config is not valid JSON."
-            showToast("Pasted config is not valid JSON: ${error.message}")
-            return false
-        }
-
-        currentRawConfig = pastedConfig
-        configStore.saveV2RayConfig(pastedConfig)
-        showToast("Config saved.")
-        return true
-    }
-
-    private fun importVlessLink(link: String): Boolean {
-        val serverResult = VlessLinkParser.parseToServer(link)
-        if (serverResult.isFailure) {
-            val message = serverResult.exceptionOrNull()?.message ?: "Invalid VLESS link."
-            linkInput?.error = message
-            showToast(message)
-            return false
-        }
-
-        val server = serverResult.getOrThrow()
-        val jsonResult = VlessLinkParser.toInternalJson(link)
-        if (jsonResult.isFailure) {
-            val message = jsonResult.exceptionOrNull()?.message ?: "Could not convert VLESS link."
-            linkInput?.error = message
-            showToast(message)
-            return false
-        }
-
-        val importedConfig = jsonResult.getOrThrow()
-        configStore.saveImportedVlessServer(server)
-        configStore.saveV2RayConfig(importedConfig)
-        currentRawConfig = importedConfig
-        configInput?.setText(importedConfig)
-        refreshServerSpinner()
-        showToast("Imported ${server.remark}.")
-        return true
+        val profile = TunnelProfile(server, payload, dnsCheckbox.isChecked)
+        configStore.saveV2RayConfig(profile.toXrayJson())
+        TunnelCoreManager(applicationContext).generateAndSaveConfig(profile)
     }
 
     private fun toggleConnection() {
@@ -576,8 +481,18 @@ class MainActivity : Activity() {
             return
         }
 
-        if (!saveRawJsonConfig()) {
-            setStatus("Disconnected", RED)
+        val profile = configStore.loadSelectedProfile()
+        if (profile == null) {
+            setStatus(TunnelCoreManager.CoreStatus.CONFIG_MISSING.label, RED)
+            showToast(TunnelCoreManager.CoreStatus.CONFIG_MISSING.label)
+            return
+        }
+
+        val coreManager = TunnelCoreManager(applicationContext)
+        val coreStatus = coreManager.getStatus(profile)
+        if (coreStatus == TunnelCoreManager.CoreStatus.CORE_NOT_INSTALLED) {
+            setStatus(coreStatus.label, RED)
+            showToast("Native core files are not installed yet.")
             return
         }
 

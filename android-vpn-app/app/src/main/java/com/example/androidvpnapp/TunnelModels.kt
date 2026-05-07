@@ -48,8 +48,31 @@ data class TunnelProfile(
     val payloadTweak: PayloadTweak,
     val dnsEnabled: Boolean
 ) {
-    fun toInternalJson(): String {
+    fun toXrayJson(): String {
+        val streamSettings = JSONObject()
+            .put("network", server.type)
+            .put("security", server.security)
+
+        if (server.security == "tls") {
+            streamSettings.put(
+                "tlsSettings",
+                JSONObject()
+                    .put("serverName", server.sni)
+                    .put("allowInsecure", server.allowInsecure)
+            )
+        }
+
+        if (server.type == "ws") {
+            streamSettings.put(
+                "wsSettings",
+                JSONObject()
+                    .put("path", "/")
+                    .put("headers", JSONObject().put("Host", server.sni.ifBlank { server.host }))
+            )
+        }
+
         val outbound = JSONObject()
+            .put("tag", "proxy")
             .put("protocol", "vless")
             .put(
                 "settings",
@@ -71,28 +94,46 @@ data class TunnelProfile(
                     )
                 )
             )
-            .put(
-                "streamSettings",
-                JSONObject()
-                    .put("network", server.type)
-                    .put("security", server.security)
-                    .put(
-                        "tlsSettings",
-                        JSONObject()
-                            .put("serverName", server.sni)
-                            .put("allowInsecure", server.allowInsecure)
-                    )
-            )
+            .put("streamSettings", streamSettings)
 
         return JSONObject()
-            .put("app", "My Tunnel Lite")
-            .put("profileName", server.remark.ifBlank { server.name })
-            .put("dnsEnabled", dnsEnabled)
-            .put("payloadTweak", payloadTweak.toJson())
-            .put("outbounds", JSONArray().put(outbound))
-            .put("remarks", server.remark)
+            .put("log", JSONObject().put("loglevel", "warning"))
+            .put(
+                "dns",
+                JSONObject().put(
+                    "servers",
+                    if (dnsEnabled) JSONArray().put("1.1.1.1").put("8.8.8.8") else JSONArray().put("localhost")
+                )
+            )
+            .put(
+                "inbounds",
+                JSONArray().put(
+                    JSONObject()
+                        .put("tag", "tun-in")
+                        .put("listen", "127.0.0.1")
+                        .put("port", 10808)
+                        .put("protocol", "socks")
+                        .put("settings", JSONObject().put("udp", true))
+                )
+            )
+            .put("outbounds", JSONArray().put(outbound).put(JSONObject().put("tag", "direct").put("protocol", "freedom")))
+            .put(
+                "routing",
+                JSONObject()
+                    .put("domainStrategy", "AsIs")
+                    .put("rules", JSONArray())
+            )
+            .put(
+                "myTunnelLite",
+                JSONObject()
+                    .put("profileName", server.remark.ifBlank { server.name })
+                    .put("payloadTweak", payloadTweak.toJson())
+                    .put("dnsEnabled", dnsEnabled)
+            )
             .toString(2)
     }
+
+    fun toInternalJson(): String = toXrayJson()
 }
 
 object SampleTunnelCatalog {
