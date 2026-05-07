@@ -78,7 +78,7 @@ class MainActivity : Activity() {
         if (requestCode == REQUEST_VPN_PERMISSION) {
             if (resultCode == RESULT_OK) {
                 startVpnService(MyVpnService.ACTION_CONNECT)
-                setConnectedState(true)
+                setStatus(TunnelCoreManager.CoreStatus.CONNECTING.label, GREEN)
             } else {
                 setStatus("Disconnected", RED)
                 showToast("VPN permission was denied.")
@@ -387,9 +387,9 @@ class MainActivity : Activity() {
         val coreManager = TunnelCoreManager(applicationContext)
         val coreStatus = coreManager.getStatusLabel(configStore.loadSelectedProfile())
         val installText = if (coreManager.areNativeCoreFilesInstalled()) {
-            "Native core files found."
+            "Native libraries found. A real JNI/AAR or executable start adapter is still required before traffic can run."
         } else {
-            "Missing libxray.so/libv2ray.so and libtun2socks.so."
+            "Missing required native libraries.\n${coreManager.describeNativeCoreInstall()}"
         }
 
         val content = LinearLayout(this).apply {
@@ -490,9 +490,23 @@ class MainActivity : Activity() {
 
         val coreManager = TunnelCoreManager(applicationContext)
         val coreStatus = coreManager.getStatus(profile)
-        if (coreStatus == TunnelCoreManager.CoreStatus.CORE_NOT_INSTALLED) {
+        if (coreStatus == TunnelCoreManager.CoreStatus.CORE_NOT_INSTALLED ||
+            coreStatus == TunnelCoreManager.CoreStatus.TUN2SOCKS_NOT_INSTALLED
+        ) {
             setStatus(coreStatus.label, RED)
-            showToast("Native core files are not installed yet.")
+            showToast(coreStatus.label)
+            return
+        }
+
+        if (coreStatus == TunnelCoreManager.CoreStatus.ERROR) {
+            setStatus(coreStatus.label, RED)
+            showToast(coreManager.getLastError() ?: coreStatus.label)
+            return
+        }
+
+        if (!coreManager.isNativeRuntimeStartAvailable()) {
+            setStatus(TunnelCoreManager.CoreStatus.ERROR.label, RED)
+            showToast("Add a real JNI/AAR or executable native start adapter first.")
             return
         }
 
@@ -501,7 +515,7 @@ class MainActivity : Activity() {
             startActivityForResult(permissionIntent, REQUEST_VPN_PERMISSION)
         } else {
             startVpnService(MyVpnService.ACTION_CONNECT)
-            setConnectedState(true)
+            setStatus(TunnelCoreManager.CoreStatus.CONNECTING.label, GREEN)
         }
     }
 
