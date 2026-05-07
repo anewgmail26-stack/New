@@ -3,4 +3,5 @@
     <string name="vpn_channel_name">Tunnel VPN connection</string>
     <string name="vpn_notification_title">My Tunnel Lite connected</string>
     <string name="vpn_notification_text">Placeholder tunnel service is running</string>
+    <string name="dashboard_tagline">Clean tunnel dashboard for simple VPN profiles</string>
 </resources>

@@ -2,8 +2,10 @@ package com.example.androidvpnapp
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -22,6 +24,8 @@ import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Spinner
@@ -38,9 +42,15 @@ class MainActivity : Activity() {
     private lateinit var serverSpinner: Spinner
     private lateinit var payloadSpinner: Spinner
     private lateinit var dnsCheckbox: CheckBox
-    private lateinit var configInput: EditText
-    private lateinit var linkInput: EditText
     private lateinit var startStopButton: Button
+    private lateinit var serverNameText: TextView
+    private lateinit var serverSubtitleText: TextView
+    private lateinit var payloadNameText: TextView
+    private lateinit var payloadSubtitleText: TextView
+
+    private var configInput: EditText? = null
+    private var linkInput: EditText? = null
+    private var currentRawConfig = ""
 
     private val timerHandler = Handler(Looper.getMainLooper())
     private var connected = false
@@ -60,6 +70,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         configStore = ConfigStore(applicationContext)
+        currentRawConfig = configStore.loadV2RayConfig()
         buildUi()
         requestNotificationPermissionIfNeeded()
     }
@@ -85,8 +96,8 @@ class MainActivity : Activity() {
     private fun buildUi() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(24), dp(20), dp(18))
-            setBackgroundColor(Color.rgb(245, 248, 245))
+            setPadding(dp(16), dp(16), dp(16), dp(14))
+            setBackgroundColor(SURFACE)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -100,60 +111,86 @@ class MainActivity : Activity() {
         root.addView(buildPayloadCard())
         root.addView(buildDnsRow())
         root.addView(buildStartStopButton())
-        root.addView(buildImportCard())
         root.addView(buildBottomNav())
 
-        setContentView(ScrollView(this).apply { addView(root) })
+        setContentView(ScrollView(this).apply {
+            isFillViewport = true
+            addView(root)
+        })
         refreshServerSpinner()
         refreshPayloadSpinner()
         updateGeneratedConfig()
     }
 
     private fun buildHeader(): View {
-        return LinearLayout(this).apply {
+        val headerContent = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            addView(TextView(this@MainActivity).apply {
-                text = "◎"
-                textSize = 46f
-                gravity = Gravity.CENTER
-                setTextColor(GREEN)
-                background = oval(Color.WHITE, GREEN, dp(3))
-                layoutParams = LinearLayout.LayoutParams(dp(86), dp(86))
-            })
-            addView(TextView(this@MainActivity).apply {
-                text = getString(R.string.app_name)
-                textSize = 26f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(DARK)
-                gravity = Gravity.CENTER
-                setPadding(0, dp(10), 0, dp(2))
-            })
-            addView(TextView(this@MainActivity).apply {
-                text = "Tunnel profile manager • placeholder core"
-                textSize = 13f
-                setTextColor(GRAY)
-                gravity = Gravity.CENTER
-            })
+            setPadding(dp(18), dp(22), dp(18), dp(24))
+        }
+
+        headerContent.addView(TextView(this).apply {
+            text = "◎"
+            textSize = 40f
+            gravity = Gravity.CENTER
+            setTextColor(GREEN)
+            background = oval(Color.WHITE, Color.argb(120, 255, 255, 255), dp(5))
+            elevation = dp(4).toFloat()
+            layoutParams = LinearLayout.LayoutParams(dp(78), dp(78))
+        })
+        headerContent.addView(TextView(this).apply {
+            text = getString(R.string.app_name)
+            textSize = 27f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(12), 0, dp(4))
+        })
+        headerContent.addView(TextView(this).apply {
+            text = getString(R.string.dashboard_tagline)
+            textSize = 13f
+            setTextColor(Color.argb(220, 255, 255, 255))
+            gravity = Gravity.CENTER
+        })
+
+        return FrameLayout(this).apply {
+            background = rounded(GREEN, GREEN_DARK, dp(0), dp(30))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, dp(14)) }
+            addView(ImageView(this@MainActivity).apply {
+                setImageResource(R.drawable.bg_tunnel_network)
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                alpha = 0.26f
+            }, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            ))
+            addView(headerContent)
         }
     }
 
     private fun buildStatsRow(): View = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER
-        setPadding(0, dp(24), 0, dp(8))
-        uploadText = statText("⬇ 0 KB")
-        downloadText = statText("⬆ 0 KB")
-        addView(uploadText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        addView(downloadText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        uploadText = statText("⬆", "Upload", "0 KB")
+        downloadText = statText("⬇", "Download", "0 KB")
+        addView(uploadText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            setMargins(0, 0, dp(6), 0)
+        })
+        addView(downloadText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            setMargins(dp(6), 0, 0, 0)
+        })
     }
 
     private fun buildStatusBlock(): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         gravity = Gravity.CENTER_HORIZONTAL
+        setPadding(0, dp(18), 0, dp(12))
         statusText = TextView(this@MainActivity).apply {
             text = "Disconnected"
-            textSize = 26f
+            textSize = 30f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(RED)
             gravity = Gravity.CENTER
@@ -161,135 +198,277 @@ class MainActivity : Activity() {
         durationText = TextView(this@MainActivity).apply {
             text = "VPN Duration : 00:00:00"
             textSize = 15f
-            setTextColor(DARK)
+            setTextColor(GRAY)
             gravity = Gravity.CENTER
-            setPadding(0, dp(4), 0, dp(18))
+            setPadding(0, dp(4), 0, 0)
         }
         addView(statusText)
         addView(durationText)
     }
 
-    private fun buildServerCard(): View = card().apply {
-        addView(TextView(this@MainActivity).apply {
-            text = "📍 Server"
-            textSize = 15f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(GREEN)
-        })
-        serverSpinner = Spinner(this@MainActivity)
-        serverSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                servers.getOrNull(position)?.let { configStore.saveSelectedServerId(it.id) }
-                updateGeneratedConfig()
+    private fun buildServerCard(): View = selectorCard(
+        icon = "⌁",
+        title = "Server",
+        onClick = { serverSpinner.performClick() },
+        nameBinder = { serverNameText = it },
+        subtitleBinder = { serverSubtitleText = it },
+        spinnerBinder = {
+            serverSpinner = it
+            serverSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    servers.getOrNull(position)?.let { server ->
+                        configStore.saveSelectedServerId(server.id)
+                        updateServerCard(server)
+                    }
+                    updateGeneratedConfig()
+                }
+
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             }
-
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
         }
-        addView(serverSpinner)
-    }
+    )
 
-    private fun buildPayloadCard(): View = card().apply {
-        addView(TextView(this@MainActivity).apply {
-            text = "🌐 Payload / Tweak"
-            textSize = 15f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(GREEN)
-        })
-        payloadSpinner = Spinner(this@MainActivity)
-        payloadSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                payloadTweaks.getOrNull(position)?.let { configStore.saveSelectedPayloadId(it.id) }
-                updateGeneratedConfig()
+    private fun buildPayloadCard(): View = selectorCard(
+        icon = "◆",
+        title = "Payload / Tweak",
+        onClick = { payloadSpinner.performClick() },
+        nameBinder = { payloadNameText = it },
+        subtitleBinder = { payloadSubtitleText = it },
+        spinnerBinder = {
+            payloadSpinner = it
+            payloadSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    payloadTweaks.getOrNull(position)?.let { payload ->
+                        configStore.saveSelectedPayloadId(payload.id)
+                        updatePayloadCard(payload)
+                    }
+                    updateGeneratedConfig()
+                }
+
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             }
-
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
         }
-        addView(payloadSpinner)
+    )
+
+    private fun selectorCard(
+        icon: String,
+        title: String,
+        onClick: () -> Unit,
+        nameBinder: (TextView) -> Unit,
+        subtitleBinder: (TextView) -> Unit,
+        spinnerBinder: (Spinner) -> Unit
+    ): View = card().apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        isClickable = true
+        isFocusable = true
+        setOnClickListener { onClick() }
+
+        addView(TextView(this@MainActivity).apply {
+            text = icon
+            textSize = 24f
+            gravity = Gravity.CENTER
+            setTextColor(GREEN)
+            background = oval(GREEN_SOFT, GREEN_LIGHT, dp(1))
+        }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { setMargins(0, 0, dp(14), 0) })
+
+        addView(LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(this@MainActivity).apply {
+                text = title
+                textSize = 12f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(GREEN)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = "Loading"
+                textSize = 17f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(DARK)
+                nameBinder(this)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = "Tap to choose"
+                textSize = 13f
+                setTextColor(GRAY)
+                subtitleBinder(this)
+            })
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        addView(TextView(this@MainActivity).apply {
+            text = "⌄"
+            textSize = 28f
+            setTextColor(GREEN)
+            gravity = Gravity.CENTER
+        }, LinearLayout.LayoutParams(dp(34), ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        addView(Spinner(this@MainActivity).apply {
+            alpha = 0f
+            visibility = View.VISIBLE
+            spinnerBinder(this)
+        }, LinearLayout.LayoutParams(1, 1))
     }
 
     private fun buildDnsRow(): View = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        setPadding(0, dp(8), 0, dp(18))
-        dnsCheckbox = CheckBox(this@MainActivity).apply {
-            text = "DNS (Default DNS)"
-            textSize = 18f
+        setPadding(dp(16), dp(10), dp(16), dp(10))
+        background = rounded(Color.WHITE, GREEN_LIGHT, dp(1), dp(24))
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { setMargins(0, 0, 0, dp(16)) }
+        addView(TextView(this@MainActivity).apply {
+            text = "DNS"
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(GREEN)
+            gravity = Gravity.CENTER
+            background = rounded(GREEN_SOFT, GREEN_SOFT, 0, dp(14))
+        }, LinearLayout.LayoutParams(dp(48), dp(32)).apply { setMargins(0, 0, dp(12), 0) })
+        addView(TextView(this@MainActivity).apply {
+            text = "Use default DNS"
+            textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD
             setTextColor(DARK)
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        dnsCheckbox = CheckBox(this@MainActivity).apply {
             isChecked = configStore.loadDnsEnabled()
-            buttonTintList = android.content.res.ColorStateList.valueOf(GREEN)
+            buttonTintList = ColorStateList.valueOf(GREEN)
             setOnCheckedChangeListener { _, isChecked ->
                 configStore.saveDnsEnabled(isChecked)
                 updateGeneratedConfig()
             }
         }
         addView(dnsCheckbox)
+        setOnClickListener { dnsCheckbox.toggle() }
     }
 
     private fun buildStartStopButton(): View = LinearLayout(this).apply {
         gravity = Gravity.CENTER
-        setPadding(0, dp(8), 0, dp(22))
-        startStopButton = Button(this@MainActivity).apply {
-            text = "START"
-            textSize = 20f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(RED)
-            background = oval(Color.WHITE, Color.LTGRAY, dp(10))
-            setOnClickListener { toggleConnection() }
-            layoutParams = LinearLayout.LayoutParams(dp(184), dp(184))
-        }
-        addView(startStopButton)
-    }
-
-    private fun buildImportCard(): View = card().apply {
-        addView(TextView(this@MainActivity).apply {
-            text = "Config Import"
-            textSize = 18f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(DARK)
-        })
-        linkInput = EditText(this@MainActivity).apply {
-            hint = "Paste vless:// share link"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            setSingleLine(false)
-            minLines = 2
-        }
-        addView(linkInput)
-        addView(Button(this@MainActivity).apply {
-            text = "Import VLESS link"
-            setOnClickListener { importVlessLink() }
-        })
-        configInput = EditText(this@MainActivity).apply {
-            hint = "Raw JSON config is still supported"
-            setText(configStore.loadV2RayConfig())
-            minLines = 6
-            gravity = Gravity.TOP or Gravity.START
-            inputType = InputType.TYPE_CLASS_TEXT or
-                InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-        }
-        addView(configInput)
-        addView(Button(this@MainActivity).apply {
-            text = "Save raw JSON config"
-            setOnClickListener { saveRawJsonConfig() }
-        })
+        setPadding(0, dp(2), 0, dp(18))
+        addView(FrameLayout(this@MainActivity).apply {
+            background = oval(Color.TRANSPARENT, GREEN_SOFT, dp(10))
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            startStopButton = Button(this@MainActivity).apply {
+                text = "START"
+                textSize = 22f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(RED)
+                background = oval(Color.WHITE, RED, dp(3))
+                elevation = dp(8).toFloat()
+                stateListAnimator = null
+                setOnClickListener { toggleConnection() }
+            }
+            addView(startStopButton, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            ))
+        }, LinearLayout.LayoutParams(dp(166), dp(166)))
     }
 
     private fun buildBottomNav(): View = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER
-        setPadding(0, dp(20), 0, 0)
-        listOf("⬇\nUpdates", "✈\nTelegram", "🛠\nTools", "⇲\nExit").forEach { label ->
+        setPadding(dp(6), dp(10), dp(6), dp(8))
+        background = rounded(Color.WHITE, GREEN_LIGHT, dp(1), dp(28))
+        listOf(
+            NavAction("↻", "Updates") { showToast("Updates coming soon.") },
+            NavAction("✈", "Telegram") { showToast("Telegram coming soon.") },
+            NavAction("☰", "Tools") { showToolsDialog() },
+            NavAction("⇲", "Exit") { finish() }
+        ).forEach { action ->
             addView(TextView(this@MainActivity).apply {
-                text = label
-                textSize = 15f
+                text = "${action.icon}\n${action.label}"
+                textSize = 13f
                 gravity = Gravity.CENTER
                 setTextColor(GREEN)
                 typeface = Typeface.DEFAULT_BOLD
-                setOnClickListener {
-                    if (label.contains("Exit")) finish() else showToast("${label.substringAfter('\n')} coming soon.")
-                }
+                setPadding(0, dp(4), 0, dp(4))
+                setOnClickListener { action.handler() }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
+    }
+
+    private fun showToolsDialog() {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+        }
+
+        content.addView(TextView(this).apply {
+            text = "Import Config"
+            textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(DARK)
+        })
+        content.addView(TextView(this).apply {
+            text = "Paste a VLESS share link or raw JSON, then save it before connecting."
+            textSize = 13f
+            setTextColor(GRAY)
+            setPadding(0, dp(4), 0, dp(10))
+        })
+
+        val vlessInput = EditText(this).apply {
+            hint = "Paste VLESS link"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setSingleLine(false)
+            minLines = 2
+            background = rounded(Color.WHITE, GREEN_LIGHT, dp(1), dp(14))
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        linkInput = vlessInput
+        content.addView(vlessInput, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { setMargins(0, 0, 0, dp(10)) })
+
+        val rawConfigInput = EditText(this).apply {
+            hint = "Paste VLESS/JSON"
+            setText(currentRawConfig)
+            minLines = 6
+            gravity = Gravity.TOP or Gravity.START
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            background = rounded(Color.WHITE, GREEN_LIGHT, dp(1), dp(14))
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        configInput = rawConfigInput
+        content.addView(rawConfigInput, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+
+        content.addView(TextView(this).apply {
+            text = "Core status: Placeholder core ready"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(GREEN)
+            setPadding(0, dp(12), 0, 0)
+        })
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Tools")
+            .setView(content)
+            .setNegativeButton("Close", null)
+            .setPositiveButton("Save/Import", null)
+            .create()
+
+        dialog.setOnDismissListener {
+            configInput = null
+            linkInput = null
+        }
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(GREEN)
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                if (saveOrImportToolsConfig()) {
+                    dialog.dismiss()
+                }
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(GRAY)
+        }
+        dialog.show()
     }
 
     private fun refreshServerSpinner() {
@@ -298,6 +477,7 @@ class MainActivity : Activity() {
         serverSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
         val selectedIndex = servers.indexOfFirst { it.id == configStore.loadSelectedServerId() }.coerceAtLeast(0)
         serverSpinner.setSelection(selectedIndex)
+        servers.getOrNull(selectedIndex)?.let { updateServerCard(it) }
     }
 
     private fun refreshPayloadSpinner() {
@@ -305,22 +485,44 @@ class MainActivity : Activity() {
         payloadSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
         val selectedIndex = payloadTweaks.indexOfFirst { it.id == configStore.loadSelectedPayloadId() }.coerceAtLeast(0)
         payloadSpinner.setSelection(selectedIndex)
+        payloadTweaks.getOrNull(selectedIndex)?.let { updatePayloadCard(it) }
+    }
+
+    private fun updateServerCard(server: TunnelServer) {
+        serverNameText.text = server.name
+        serverSubtitleText.text = "${server.host}:${server.port}"
+    }
+
+    private fun updatePayloadCard(payload: PayloadTweak) {
+        payloadNameText.text = payload.name
+        payloadSubtitleText.text = payload.mode
     }
 
     private fun updateGeneratedConfig() {
+        if (!::serverSpinner.isInitialized || !::payloadSpinner.isInitialized || !::dnsCheckbox.isInitialized) return
         val server = servers.getOrNull(serverSpinner.selectedItemPosition) ?: return
         val payload = payloadTweaks.getOrNull(payloadSpinner.selectedItemPosition) ?: return
         val generated = TunnelProfile(server, payload, dnsCheckbox.isChecked).toInternalJson()
-        if (!configInput.hasFocus()) {
-            configInput.setText(generated)
+        currentRawConfig = generated
+        val activeConfigInput = configInput
+        if (activeConfigInput != null && !activeConfigInput.hasFocus()) {
+            activeConfigInput.setText(generated)
         }
         configStore.saveV2RayConfig(generated)
     }
 
-    private fun saveRawJsonConfig(): Boolean {
-        val pastedConfig = configInput.text.toString().trim()
+    private fun saveOrImportToolsConfig(): Boolean {
+        val pastedLink = linkInput?.text?.toString()?.trim().orEmpty()
+        if (pastedLink.isNotEmpty()) {
+            return importVlessLink(pastedLink)
+        }
+        return saveRawJsonConfig(configInput?.text?.toString().orEmpty())
+    }
+
+    private fun saveRawJsonConfig(config: String = currentRawConfig): Boolean {
+        val pastedConfig = config.trim()
         if (pastedConfig.isEmpty()) {
-            configInput.error = "Config cannot be empty."
+            configInput?.error = "Config cannot be empty."
             showToast("Config cannot be empty.")
             return false
         }
@@ -328,40 +530,43 @@ class MainActivity : Activity() {
         try {
             JSONObject(pastedConfig)
         } catch (error: Exception) {
-            configInput.error = "Pasted config is not valid JSON."
+            configInput?.error = "Pasted config is not valid JSON."
             showToast("Pasted config is not valid JSON: ${error.message}")
             return false
         }
 
+        currentRawConfig = pastedConfig
         configStore.saveV2RayConfig(pastedConfig)
-        showToast("Raw JSON config saved.")
+        showToast("Config saved.")
         return true
     }
 
-    private fun importVlessLink() {
-        val link = linkInput.text.toString()
+    private fun importVlessLink(link: String): Boolean {
         val serverResult = VlessLinkParser.parseToServer(link)
         if (serverResult.isFailure) {
             val message = serverResult.exceptionOrNull()?.message ?: "Invalid VLESS link."
-            linkInput.error = message
+            linkInput?.error = message
             showToast(message)
-            return
+            return false
         }
 
         val server = serverResult.getOrThrow()
         val jsonResult = VlessLinkParser.toInternalJson(link)
         if (jsonResult.isFailure) {
             val message = jsonResult.exceptionOrNull()?.message ?: "Could not convert VLESS link."
-            linkInput.error = message
+            linkInput?.error = message
             showToast(message)
-            return
+            return false
         }
 
+        val importedConfig = jsonResult.getOrThrow()
         configStore.saveImportedVlessServer(server)
-        configStore.saveV2RayConfig(jsonResult.getOrThrow())
-        configInput.setText(jsonResult.getOrThrow())
+        configStore.saveV2RayConfig(importedConfig)
+        currentRawConfig = importedConfig
+        configInput?.setText(importedConfig)
         refreshServerSpinner()
         showToast("Imported ${server.remark}.")
+        return true
     }
 
     private fun toggleConnection() {
@@ -392,16 +597,18 @@ class MainActivity : Activity() {
             setStatus("Connected", GREEN)
             startStopButton.text = "STOP"
             startStopButton.setTextColor(GREEN)
+            startStopButton.background = oval(Color.WHITE, GREEN, dp(3))
             timerHandler.removeCallbacks(timerRunnable)
             timerHandler.post(timerRunnable)
         } else {
             setStatus("Disconnected", RED)
             startStopButton.text = "START"
             startStopButton.setTextColor(RED)
+            startStopButton.background = oval(Color.WHITE, RED, dp(3))
             timerHandler.removeCallbacks(timerRunnable)
             durationText.text = "VPN Duration : 00:00:00"
-            uploadText.text = "⬇ 0 KB"
-            downloadText.text = "⬆ 0 KB"
+            uploadText.text = "⬆\nUpload\n0 KB"
+            downloadText.text = "⬇\nDownload\n0 KB"
         }
     }
 
@@ -432,20 +639,25 @@ class MainActivity : Activity() {
 
     private fun card(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(18), dp(14), dp(18), dp(14))
-        background = rounded(Color.WHITE, GREEN, dp(3), dp(34))
+        setPadding(dp(16), dp(14), dp(16), dp(14))
+        background = rounded(Color.WHITE, GREEN, dp(2), dp(26))
+        elevation = dp(2).toFloat()
         layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { setMargins(0, dp(8), 0, dp(14)) }
+        ).apply { setMargins(0, dp(6), 0, dp(12)) }
     }
 
-    private fun statText(value: String): TextView = TextView(this).apply {
-        text = value
-        textSize = 18f
+    private fun statText(icon: String, label: String, value: String): TextView = TextView(this).apply {
+        text = "$icon\n$label\n$value"
+        textSize = 13f
         typeface = Typeface.DEFAULT_BOLD
         setTextColor(DARK)
         gravity = Gravity.CENTER
+        setLineSpacing(dp(2).toFloat(), 1f)
+        setPadding(dp(10), dp(10), dp(10), dp(10))
+        background = rounded(Color.WHITE, GREEN_LIGHT, dp(1), dp(20))
+        elevation = dp(1).toFloat()
     }
 
     private fun setStatus(status: String, color: Int) {
@@ -474,12 +686,18 @@ class MainActivity : Activity() {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
+    private data class NavAction(val icon: String, val label: String, val handler: () -> Unit)
+
     companion object {
         private const val REQUEST_VPN_PERMISSION = 100
         private const val REQUEST_NOTIFICATIONS = 101
-        private val GREEN = Color.rgb(0, 155, 28)
-        private val RED = Color.rgb(190, 0, 20)
-        private val DARK = Color.rgb(25, 34, 38)
-        private val GRAY = Color.rgb(96, 110, 118)
+        private val GREEN = Color.rgb(0, 155, 64)
+        private val GREEN_DARK = Color.rgb(0, 120, 52)
+        private val GREEN_LIGHT = Color.rgb(188, 232, 204)
+        private val GREEN_SOFT = Color.rgb(230, 248, 235)
+        private val RED = Color.rgb(198, 31, 49)
+        private val DARK = Color.rgb(24, 40, 35)
+        private val GRAY = Color.rgb(94, 112, 106)
+        private val SURFACE = Color.rgb(246, 250, 247)
     }
 }
