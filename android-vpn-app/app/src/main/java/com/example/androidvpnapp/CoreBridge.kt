@@ -4,21 +4,20 @@ import android.content.Context
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import go.Seq
 import java.io.File
+import libv2ray.Libv2ray
+import libv2ray.V2RayPoint
+import libv2ray.V2RayVPNServiceSupportsSet
 
 /**
  * Bridges app-selected profiles to a packaged Xray/V2Ray core.
  *
  * Android packages files from app/src/main/jniLibs/<abi>/ into the APK and extracts the
- * matching ABI at install time into applicationInfo.nativeLibraryDir (for example,
- * /data/app/.../lib/arm64). Kotlin cannot execute a .so with ProcessBuilder; a .so must
- * either expose JNI functions loaded with System.loadLibrary(...), or the project must ship
- * a separate executable binary/AAR wrapper that knows how to start and stop the native core.
- *
- * This class deliberately does not invent JNI method names. The NativeRuntimeAdapter below is
- * the single TODO seam for a future, real Xray/V2Ray/tun2socks AAR/JNI wrapper. Until that
- * adapter is implemented, start() fails gracefully even when native libraries are present so
- * the UI never claims real traffic is connected through placeholder code.
+ * matching ABI at install time into applicationInfo.nativeLibraryDir. This bridge loads the
+ * gomobile libv2ray JNI surface from libgojni.so, starts the selected VLESS config through
+ * V2RayPoint.runLoop(), then launches the packaged tun2socks binary with the Android VPN TUN
+ * file descriptor so device traffic is forwarded to the local SOCKS inbound.
  */
 class CoreBridge(private val context: Context) {
     private val configFile = File(context.filesDir, GENERATED_CONFIG_FILE)
@@ -92,7 +91,7 @@ class CoreBridge(private val context: Context) {
         return install.core != null && install.tun2socks != null && install.gojni != null
     }
 
-    fun isNativeRuntimeStartAvailable(): Boolean = NativeRuntimeAdapter().isStartAvailable()
+    fun isNativeRuntimeStartAvailable(): Boolean = NativeRuntimeAdapter.isStartAvailable()
 
     fun generateAndSaveConfig(profile: TunnelProfile?): Result<File> {
         if (profile == null) {
@@ -110,7 +109,7 @@ class CoreBridge(private val context: Context) {
         }
     }
 
-    fun start(profile: TunnelProfile?, vpnInterface: ParcelFileDescriptor?): Result<Unit> {
+    fun start(profile: TunnelProfile?, vpnInterface: ParcelFileDescriptor?, protectSocket: (Int) -> Boolean = { false }): Result<Unit> {
         val generated = generateAndSaveConfig(profile).getOrElse { return Result.failure(it) }
         val install = detectNativeLibraries()
         val core = install.core ?: return fail(Status.MissingCore, "Missing libxray.so or libv2ray.so for ${EXPECTED_ABIS.joinToString()}.")
@@ -124,15 +123,14 @@ class CoreBridge(private val context: Context) {
         selectedCore = core
         Log.i(TAG, "Prepared ${core.name} (${core.abi}) with ${tun2socks.name} and ${gojni.name}; config=${generated.absolutePath}.")
 
-        val adapter = NativeRuntimeAdapter()
-        if (!adapter.isStartAvailable()) {
+        if (!NativeRuntimeAdapter.isStartAvailable()) {
             return fail(
                 Status.StartApiNotWired,
                 START_API_NOT_WIRED_MESSAGE
             )
         }
 
-        return adapter.start(core, tun2socks, generated, vpnInterface)
+        return NativeRuntimeAdapter.start(context, core, tun2socks, generated, vpnInterface, protectSocket)
             .onSuccess {
                 status = Status.Running
                 lastError = null
@@ -145,7 +143,7 @@ class CoreBridge(private val context: Context) {
 
     fun stop() {
         if (status == Status.Starting || status == Status.Running || status == Status.Error) {
-            NativeRuntimeAdapter().stop(selectedCore)
+            NativeRuntimeAdapter.stop(selectedCore)
             Log.i(TAG, "Stopped native core bridge state.")
         }
         selectedCore = null
@@ -177,7 +175,7 @@ class CoreBridge(private val context: Context) {
         MissingCore("Missing Xray/V2Ray core"),
         MissingTun2Socks("Missing tun2socks"),
         MissingGoJni("Missing gojni"),
-        StartApiNotWired("Native core files present, start API not wired"),
+        StartApiNotWired("Native runtime unavailable"),
         Ready("Ready"),
         Starting("Starting"),
         Running("Running"),
@@ -202,23 +200,90 @@ class CoreBridge(private val context: Context) {
         val discovered: List<NativeLibrary>
     )
 
-    /** TODO: Replace with calls provided by a real Xray/V2Ray/tun2socks JNI/AAR integration. */
-    private class NativeRuntimeAdapter {
-        fun isStartAvailable(): Boolean = false
+    private object NativeRuntimeAdapter {
+        private var v2rayPoint: V2RayPoint? = null
+        private var v2rayThread: Thread? = null
+        private var tun2socksProcess: Process? = null
+        private var detachedTunFd: Int? = null
+
+        fun isStartAvailable(): Boolean = runCatching {
+            Seq.touch()
+            Libv2ray.touch()
+            true
+        }.getOrDefault(false)
 
         fun start(
+            context: Context,
             core: NativeLibrary,
             tun2socks: NativeLibrary,
             configFile: File,
-            vpnInterface: ParcelFileDescriptor
-        ): Result<Unit> = Result.failure(
-            UnsupportedOperationException(
-                "No native runtime adapter is wired for ${core.name}, ${tun2socks.name}, ${configFile.name}, fd=${vpnInterface.fd}."
-            )
-        )
+            vpnInterface: ParcelFileDescriptor,
+            protectSocket: (Int) -> Boolean
+        ): Result<Unit> = runCatching {
+            stop(core)
+            Seq.touch()
+            Seq.setContext(context.applicationContext)
+            Libv2ray.touch()
+            Libv2ray.initV2Env(context.filesDir.absolutePath)
+
+            val configContent = configFile.readText()
+            Libv2ray.testConfig(configContent)
+
+            val supportSet = object : V2RayVPNServiceSupportsSet {
+                override fun setup(conf: String): Long = 0L
+                override fun prepare(): Long = 0L
+                override fun shutdown(): Long = 0L
+                override fun protect(socket: Long): Boolean = protectSocket(socket.toInt())
+                override fun onEmitStatus(code: Long, message: String): Long {
+                    Log.i(TAG, "libv2ray status[$code]: $message")
+                    return 0L
+                }
+            }
+
+            val point = Libv2ray.newV2RayPoint(supportSet, false)
+            point.setConfigureFileContent(configContent)
+            point.setDomainName("")
+            v2rayPoint = point
+            v2rayThread = Thread({ point.runLoop(false) }, "xray-run-loop").apply {
+                isDaemon = true
+                start()
+            }
+
+            Thread.sleep(450L)
+            val tunFd = vpnInterface.detachFd()
+            detachedTunFd = tunFd
+            tun2socksProcess = startTun2Socks(tun2socks, tunFd)
+            Log.i(TAG, "Started ${core.name} through libgojni and ${tun2socks.name} with tun fd $tunFd.")
+        }
 
         fun stop(core: NativeLibrary?) {
-            // No-op until a real adapter owns native process/JNI lifecycle.
+            runCatching { v2rayPoint?.stopLoop() }
+                .onFailure { Log.w(TAG, "Failed to stop libv2ray point for ${core?.name.orEmpty()}.", it) }
+            v2rayPoint = null
+            v2rayThread?.interrupt()
+            v2rayThread = null
+            tun2socksProcess?.destroy()
+            tun2socksProcess = null
+            detachedTunFd = null
+        }
+
+        private fun startTun2Socks(tun2socks: NativeLibrary, tunFd: Int): Process {
+            val executable = tun2socks.installedFile ?: error("tun2socks file is missing.")
+            executable.setExecutable(true, false)
+            val command = listOf(
+                executable.absolutePath,
+                "--logger", "stdout",
+                "--loglevel", "warning",
+                "--tunfd", tunFd.toString(),
+                "--tunmtu", "1500",
+                "--netif-ipaddr", "10.10.0.2",
+                "--netif-netmask", "255.255.255.252",
+                "--socks-server-addr", "127.0.0.1:10808",
+                "--udpgw-remote-server-addr", "127.0.0.1:7300"
+            )
+            return ProcessBuilder(command)
+                .redirectErrorStream(true)
+                .start()
         }
     }
 
@@ -230,6 +295,6 @@ class CoreBridge(private val context: Context) {
         private const val TUN2SOCKS_LIBRARY = "libtun2socks.so"
         private const val GOJNI_LIBRARY = "libgojni.so"
         private const val START_API_NOT_WIRED_MESSAGE =
-            "Native core files present, start API not wired. Add a documented Java/Kotlin JNI wrapper, AAR, or source API before enabling traffic."
+            "Native runtime could not load libgojni/libv2ray wrappers."
     }
 }

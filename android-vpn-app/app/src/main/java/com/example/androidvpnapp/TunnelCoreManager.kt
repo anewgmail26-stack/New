@@ -29,7 +29,7 @@ class TunnelCoreManager(private val context: Context) {
 
     fun generateAndSaveConfig(profile: TunnelProfile?): Result<File> = coreBridge.generateAndSaveConfig(profile)
 
-    fun start(profile: TunnelProfile?, vpnInterface: ParcelFileDescriptor?): Result<Unit> {
+    fun start(profile: TunnelProfile?, vpnInterface: ParcelFileDescriptor?, protectSocket: (Int) -> Boolean = { false }): Result<Unit> {
         if (profile == null) {
             return Result.failure(IllegalStateException(CoreStatus.CONFIG_MISSING.label))
         }
@@ -43,7 +43,7 @@ class TunnelCoreManager(private val context: Context) {
             return Result.failure(IllegalStateException(preflightStatus.label))
         }
 
-        val result = coreBridge.start(profile, vpnInterface)
+        val result = coreBridge.start(profile, vpnInterface, protectSocket)
         if (result.isFailure) {
             Log.w(TAG, "CoreBridge refused to start: ${coreBridge.getLastError()}")
         }
@@ -71,7 +71,7 @@ class TunnelCoreManager(private val context: Context) {
         TUN2SOCKS_NOT_INSTALLED("Missing tun2socks"),
         GOJNI_NOT_INSTALLED("Missing gojni"),
         CONFIG_MISSING("Config missing"),
-        START_API_NOT_WIRED("Native core files present, start API not wired"),
+        START_API_NOT_WIRED("Native runtime unavailable"),
         READY("Ready"),
         CONNECTING("Starting"),
         CONNECTED("Running"),
