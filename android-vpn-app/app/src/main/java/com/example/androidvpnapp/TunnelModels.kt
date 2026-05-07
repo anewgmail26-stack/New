@@ -122,7 +122,9 @@ data class TunnelProfile(
                                     JSONObject()
                                         .put("id", server.uuid)
                                         .put("encryption", server.encryption)
-                                        .put("flow", server.flow)
+                                        .apply {
+                                            if (server.flow.isNotBlank()) put("flow", server.flow)
+                                        }
                                 )
                             )
                     )
