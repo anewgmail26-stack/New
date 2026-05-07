@@ -41,6 +41,7 @@ class MyVpnService : VpnService() {
 
     private fun safeConnect() {
         try {
+            startForeground(NOTIFICATION_ID, buildNotification())
             connect()
         } catch (error: UnsatisfiedLinkError) {
             handleStartFailure("native library could not be loaded: ${error.message}", error)
@@ -72,8 +73,6 @@ class MyVpnService : VpnService() {
             handleStartFailure(coreStatus.label, null)
             return
         }
-
-        startForeground(NOTIFICATION_ID, buildNotification())
 
         try {
             Log.i(TAG_PROFILE, "Starting selected server/profile: id=${profile.server.id}, name=${profile.server.name}, host=${profile.server.host}:${profile.server.port}, type=${profile.server.type}, security=${profile.server.security}.")

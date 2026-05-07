@@ -161,7 +161,7 @@ data class TunnelProfile(
                 "myTunnelLite",
                 JSONObject()
                     .put("profileName", server.remark.ifBlank { server.name })
-                    .put("payloadTweak", payloadTweak.toJson())
+                    .put("mode", "v2ray")
                     .put("dnsEnabled", dnsEnabled)
             )
             .toString(2)
@@ -173,64 +173,28 @@ data class TunnelProfile(
 object SampleTunnelCatalog {
     val servers = listOf(
         TunnelServer(
-            id = "green-edge",
-            name = "Green Edge Server",
-            host = "edge.example.net",
-            port = 443,
-            type = "tcp",
-            security = "tls",
-            sni = "edge.example.net",
-            encryption = "none",
-            allowInsecure = false,
-            remark = "Sample Green Edge",
-            uuid = "00000000-0000-4000-8000-000000000001"
-        ),
-        TunnelServer(
-            id = "cloud-tunnel",
-            name = "Cloud Tunnel Server",
-            host = "cloud.example.net",
-            port = 443,
-            type = "ws",
-            security = "tls",
-            sni = "cloud.example.net",
-            encryption = "none",
-            allowInsecure = false,
-            remark = "Sample Cloud Tunnel",
-            uuid = "00000000-0000-4000-8000-000000000002"
-        ),
-        TunnelServer(
-            id = "lab-direct",
-            name = "Lab Direct Server",
-            host = "198.51.100.10",
+            id = "vpn",
+            name = "V2Ray 80 Server",
+            host = "shar1.knlvpn.com",
             port = 80,
-            type = "tcp",
+            type = "ws",
             security = "none",
             sni = "",
             encryption = "none",
             allowInsecure = false,
-            remark = "Sample Lab Direct",
-            uuid = "00000000-0000-4000-8000-000000000003"
+            remark = "V2Ray port 80",
+            uuid = "48990253-ed95-4aac-9ad3-ad4457e50b14",
+            wsPath = "/",
+            hostHeader = "telegram.org"
         )
     )
 
-    val payloadTweaks = listOf(
-        PayloadTweak(
-            id = "http-default",
-            name = "Default HTTP Tweak",
-            mode = "HTTP",
-            payload = "GET / HTTP/1.1[crlf]Host: [host][crlf]Connection: Upgrade[crlf][crlf]"
-        ),
-        PayloadTweak(
-            id = "tls-sni",
-            name = "TLS SNI Tweak",
-            mode = "TLS",
-            payload = "SNI=[sni];ALPN=h2,http/1.1"
-        ),
-        PayloadTweak(
-            id = "direct",
-            name = "Direct Mode",
-            mode = "DIRECT",
-            payload = ""
-        )
+    val defaultPayloadTweak = PayloadTweak(
+        id = "v2ray-direct",
+        name = "V2Ray",
+        mode = "V2RAY",
+        payload = ""
     )
+
+    val payloadTweaks = listOf(defaultPayloadTweak)
 }

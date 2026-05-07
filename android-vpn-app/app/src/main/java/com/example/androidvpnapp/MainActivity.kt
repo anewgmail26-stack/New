@@ -41,21 +41,17 @@ class MainActivity : Activity() {
     private lateinit var downloadText: TextView
     private lateinit var durationText: TextView
     private lateinit var serverSpinner: Spinner
-    private lateinit var payloadSpinner: Spinner
     private lateinit var dnsCheckbox: CheckBox
     private lateinit var startStopButton: Button
     private lateinit var serverNameText: TextView
     private lateinit var serverSubtitleText: TextView
-    private lateinit var payloadNameText: TextView
-    private lateinit var payloadSubtitleText: TextView
-
 
     private val timerHandler = Handler(Looper.getMainLooper())
     private var connected = false
     private var connecting = false
     private var connectedAt = 0L
     private var servers = emptyList<TunnelServer>()
-    private val payloadTweaks = SampleTunnelCatalog.payloadTweaks
+    private val defaultPayloadTweak = SampleTunnelCatalog.defaultPayloadTweak
 
     private val vpnStatusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -138,7 +134,6 @@ class MainActivity : Activity() {
         root.addView(buildStatsRow())
         root.addView(buildStatusBlock())
         root.addView(buildServerCard())
-        root.addView(buildPayloadCard())
         root.addView(buildDnsRow())
         root.addView(buildStartStopButton())
         root.addView(buildBottomNav())
@@ -148,7 +143,6 @@ class MainActivity : Activity() {
             addView(root)
         })
         refreshServerSpinner()
-        refreshPayloadSpinner()
         updateGeneratedConfig()
     }
 
@@ -249,28 +243,6 @@ class MainActivity : Activity() {
                     servers.getOrNull(position)?.let { server ->
                         configStore.saveSelectedServerId(server.id)
                         updateServerCard(server)
-                    }
-                    updateGeneratedConfig()
-                }
-
-                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-            }
-        }
-    )
-
-    private fun buildPayloadCard(): View = selectorCard(
-        icon = "◆",
-        title = "Payload / Tweak",
-        onClick = { payloadSpinner.performClick() },
-        nameBinder = { payloadNameText = it },
-        subtitleBinder = { payloadSubtitleText = it },
-        spinnerBinder = {
-            payloadSpinner = it
-            payloadSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                    payloadTweaks.getOrNull(position)?.let { payload ->
-                        configStore.saveSelectedPayloadId(payload.id)
-                        updatePayloadCard(payload)
                     }
                     updateGeneratedConfig()
                 }
@@ -483,30 +455,15 @@ class MainActivity : Activity() {
         servers.getOrNull(selectedIndex)?.let { updateServerCard(it) }
     }
 
-    private fun refreshPayloadSpinner() {
-        val labels = payloadTweaks.map { "${it.name}  •  ${it.mode}" }
-        payloadSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
-        val selectedIndex = payloadTweaks.indexOfFirst { it.id == configStore.loadSelectedPayloadId() }.coerceAtLeast(0)
-        payloadTweaks.getOrNull(selectedIndex)?.let { configStore.saveSelectedPayloadId(it.id) }
-        payloadSpinner.setSelection(selectedIndex)
-        payloadTweaks.getOrNull(selectedIndex)?.let { updatePayloadCard(it) }
-    }
-
     private fun updateServerCard(server: TunnelServer) {
         serverNameText.text = server.name
         serverSubtitleText.text = "${server.host}:${server.port}"
     }
 
-    private fun updatePayloadCard(payload: PayloadTweak) {
-        payloadNameText.text = payload.name
-        payloadSubtitleText.text = payload.mode
-    }
-
     private fun updateGeneratedConfig() {
-        if (!::serverSpinner.isInitialized || !::payloadSpinner.isInitialized || !::dnsCheckbox.isInitialized) return
+        if (!::serverSpinner.isInitialized || !::dnsCheckbox.isInitialized) return
         val server = servers.getOrNull(serverSpinner.selectedItemPosition) ?: return
-        val payload = payloadTweaks.getOrNull(payloadSpinner.selectedItemPosition) ?: return
-        val profile = TunnelProfile(server, payload, dnsCheckbox.isChecked)
+        val profile = TunnelProfile(server, defaultPayloadTweak, dnsCheckbox.isChecked)
         configStore.saveV2RayConfig(profile.toXrayJson())
         TunnelCoreManager(applicationContext).generateAndSaveConfig(profile)
     }
