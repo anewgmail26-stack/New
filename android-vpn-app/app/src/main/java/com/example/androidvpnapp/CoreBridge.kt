@@ -7,6 +7,7 @@ import android.util.Log
 import go.Seq
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicReference
 import libv2ray.Libv2ray
 import libv2ray.V2RayPoint
 import libv2ray.V2RayVPNServiceSupportsSet
@@ -295,18 +296,24 @@ class CoreBridge(private val context: Context) {
             point.setConfigureFileContent(configContent)
             point.setDomainName("")
             v2rayPoint = point
+            val runLoopFailure = AtomicReference<Throwable?>()
             v2rayThread = Thread({
                 try {
                     point.runLoop(false)
                 } catch (error: UnsatisfiedLinkError) {
+                    runLoopFailure.set(error)
                     Log.e(TAG_V2RAY, "V2Ray runLoop failed: unsatisfied link.", error)
                 } catch (error: NoClassDefFoundError) {
+                    runLoopFailure.set(error)
                     Log.e(TAG_V2RAY, "V2Ray runLoop failed: missing class.", error)
                 } catch (error: IllegalStateException) {
+                    runLoopFailure.set(error)
                     Log.e(TAG_V2RAY, "V2Ray runLoop failed: illegal state.", error)
                 } catch (error: IOException) {
+                    runLoopFailure.set(error)
                     Log.e(TAG_V2RAY, "V2Ray runLoop failed: I/O error.", error)
                 } catch (error: Throwable) {
+                    runLoopFailure.set(error)
                     Log.e(TAG_V2RAY, "V2Ray runLoop failed.", error)
                 }
             }, "xray-run-loop").apply {
@@ -314,7 +321,12 @@ class CoreBridge(private val context: Context) {
                 start()
             }
 
-            Thread.sleep(450L)
+            Thread.sleep(700L)
+            runLoopFailure.get()?.let { throw IllegalStateException("V2Ray run loop failed before routing started: ${it.message ?: it::class.java.simpleName}", it) }
+            if (v2rayThread?.isAlive != true) {
+                throw IllegalStateException("V2Ray run loop exited before routing started.")
+            }
+
             val tunFd = vpnInterface.detachFd()
             detachedTunFd = tunFd
             tun2socksProcess = startTun2Socks(tun2socks, tunFd)
@@ -351,11 +363,11 @@ class CoreBridge(private val context: Context) {
 
         private fun startTun2Socks(tun2socks: NativeLibrary, tunFd: Int): Process {
             val executable = tun2socks.installedFile ?: error("tun2socks file is missing.")
-            executable.setExecutable(true, false)
+            if (!executable.setExecutable(true, false) && !executable.canExecute()) {
+                throw IOException("tun2socks is not executable at ${executable.absolutePath}.")
+            }
             val command = listOf(
                 executable.absolutePath,
-                "--logger", "stdout",
-                "--loglevel", "warning",
                 "--tunfd", tunFd.toString(),
                 "--tunmtu", "1500",
                 "--netif-ipaddr", "10.10.0.2",
@@ -363,9 +375,28 @@ class CoreBridge(private val context: Context) {
                 "--socks-server-addr", "127.0.0.1:10808",
                 "--udpgw-remote-server-addr", "127.0.0.1:7300"
             )
-            return ProcessBuilder(command)
+            val earlyOutput = StringBuilder()
+            val process = ProcessBuilder(command)
                 .redirectErrorStream(true)
                 .start()
+            Thread({
+                process.inputStream.bufferedReader().useLines { lines ->
+                    lines.forEach { line ->
+                        if (earlyOutput.length < MAX_TUN2SOCKS_LOG_CHARS) {
+                            earlyOutput.appendLine(line)
+                        }
+                        Log.i(TAG_TUN2SOCKS, line)
+                    }
+                }
+            }, "tun2socks-log").apply {
+                isDaemon = true
+                start()
+            }
+            Thread.sleep(350L)
+            if (!process.isAlive) {
+                throw IOException("tun2socks exited early with code ${process.exitValue()}: ${earlyOutput.toString().trim().ifBlank { "no output" }}")
+            }
+            return process
         }
     }
 
@@ -383,5 +414,6 @@ class CoreBridge(private val context: Context) {
         private const val GOJNI_LIBRARY = "libgojni.so"
         private const val START_API_NOT_WIRED_MESSAGE =
             "Native runtime could not load libgojni/libv2ray wrappers."
+        private const val MAX_TUN2SOCKS_LOG_CHARS = 4_000
     }
 }
