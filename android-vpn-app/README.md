@@ -1,17 +1,103 @@
-# Android VPN App
+# My Tunnel Lite Android VPN
 
 ## What this app is
 
-This is a real Android Studio project for a Kotlin-based starter Android VPN app. It uses Android's `VpnService` permission flow, stores a pasted V2Ray/Xray JSON configuration locally, starts a foreground service notification while the VPN service is active, and creates an Android VPN TUN interface. Real V2Ray/Xray native core integration is still a TODO before this can function as a production proxy VPN.
+My Tunnel Lite is a Kotlin Android tunnel VPN style starter app. It keeps the existing Android `VpnService` flow, foreground notification, and raw JSON config storage, then adds a green/white tunnel UI, local profile choices, sample server and payload/tweak models, DNS preference storage, and VLESS share-link import.
 
-The project is intentionally isolated in the `android-vpn-app` folder so it does not replace or delete any existing app in the repository.
+The app is still a starter integration project. It can request VPN permission, show a foreground notification, validate JSON, and create an Android VPN TUN interface. It does **not** proxy real user traffic through Xray/V2Ray until native core binaries and TUN/tun2socks wiring are added.
 
 ## Current limitations
 
-- The app does **not** include V2Ray or Xray native core binaries.
-- `V2RayManager` validates JSON and contains safe placeholder start/stop logic.
-- The VPN service creates a TUN interface, but traffic will not be proxied to a V2Ray/Xray core until native core integration is added.
-- Production VPN apps need robust routing, DNS handling, lifecycle recovery, error reporting, split tunneling rules, battery optimization handling, and security hardening.
+- The app does **not** include Xray, V2Ray, tun2socks, or other native proxy/VPN core binaries.
+- `TunnelCoreManager` validates JSON and uses safe placeholder start/stop logic only.
+- `MyVpnService` creates an Android TUN interface, but traffic forwarding is not connected to a native core yet.
+- Upload/download counters are UI placeholders until real traffic accounting is connected.
+- The connected/disconnected UI reflects the app button flow and is not a full service-state observer yet.
+- Production VPN apps still need robust routing, DNS handling, lifecycle recovery, split tunneling rules, battery optimization handling, logging, crash recovery, and security hardening.
+
+## UI and local config features
+
+- Green/white tunnel style interface named **My Tunnel Lite**.
+- Connection status, upload/download counters, and VPN duration timer.
+- Server selector card backed by sample server models plus the latest imported VLESS server.
+- Payload/Tweak selector card backed by sample payload models.
+- DNS checkbox saved locally.
+- Large circular START/STOP button.
+- Bottom navigation placeholders for Updates, Telegram, Tools, and Exit.
+- Raw JSON config editor remains available for manual Xray/V2Ray-compatible JSON.
+
+## VLESS import format
+
+Paste a `vless://` share link into the VLESS import box and tap **Import VLESS link**.
+
+Example:
+
+```text
+vless://00000000-0000-4000-8000-000000000001@example.com:443?type=tcp&security=tls&sni=example.com&encryption=none&allowInsecure=0#Example%20Server
+```
+
+The importer validates and parses:
+
+- `uuid` from the user-info section before `@`
+- `host`
+- `port`
+- `type` query parameter, defaulting to `tcp`
+- `security` query parameter, defaulting to `none`
+- `sni` or `serverName` query parameter
+- `encryption` query parameter, defaulting to `none`
+- `allowInsecure` query parameter (`1`, `true`, and `yes` mean true)
+- remark/name from the URL fragment after `#`
+
+Invalid links show clear field errors and toast messages, such as missing UUID, invalid UUID, missing host, missing valid port, or unsupported non-`vless://` input.
+
+## Server config JSON format
+
+The app converts the selected sample server, selected payload/tweak, DNS option, or imported VLESS link into internal JSON and saves it locally. Raw JSON can also be pasted and saved manually.
+
+Sample generated JSON shape:
+
+```json
+{
+  "app": "My Tunnel Lite",
+  "profileName": "Sample Green Edge",
+  "dnsEnabled": false,
+  "payloadTweak": {
+    "id": "http-default",
+    "name": "Default HTTP Tweak",
+    "mode": "HTTP",
+    "payload": "GET / HTTP/1.1[crlf]Host: [host][crlf]Connection: Upgrade[crlf][crlf]"
+  },
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "edge.example.net",
+            "port": 443,
+            "users": [
+              {
+                "id": "00000000-0000-4000-8000-000000000001",
+                "encryption": "none",
+                "flow": ""
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "edge.example.net",
+          "allowInsecure": false
+        }
+      }
+    }
+  ],
+  "remarks": "Sample Green Edge"
+}
+```
 
 ## How to open in Android Studio
 
@@ -22,53 +108,49 @@ The project is intentionally isolated in the `android-vpn-app` folder so it does
 5. Allow Android Studio to sync Gradle and download the Android Gradle Plugin/Kotlin plugin dependencies.
 6. If prompted, install the required Android SDK platform for `compileSdk 35`.
 
-## How to add V2Ray/Xray native core binaries
+## How to build APK locally
 
-1. Build or obtain trusted V2Ray/Xray core binaries for the Android ABIs you plan to support, such as:
+From a local machine with Android SDK installed, run Gradle from the `android-vpn-app` folder. If a Gradle wrapper is added later, prefer `./gradlew`; otherwise use a locally installed Gradle version compatible with the Android Gradle Plugin:
+
+```bash
+gradle assembleDebug
+```
+
+This Codex environment may not include Android SDK tooling. If `ANDROID_HOME` is unavailable, build locally in Android Studio or use the GitHub Actions workflow instead.
+
+## How to build and download APK from GitHub Actions
+
+The repository includes `.github/workflows/android-build.yml`, which builds the debug APK on a GitHub-hosted Ubuntu runner with JDK 17, Android SDK packages, and Gradle.
+
+1. Push a branch or open a pull request that changes files under `android-vpn-app/` or the workflow file.
+2. Go to the GitHub repository in your browser.
+3. Open the **Actions** tab.
+4. Open the latest **Android VPN App Build** workflow run.
+5. Wait for **Build debug APK** to finish successfully.
+6. Download the `android-vpn-app-debug-apk` artifact from the workflow run page.
+7. Install the APK on Android after allowing installation from unknown sources for the browser or file manager used to open it.
+
+Remember: this APK still uses placeholder tunnel-core logic. It does not provide real VLESS/Xray/V2Ray traffic proxying until native core integration is implemented.
+
+## How to add real Xray/V2Ray native core binaries later
+
+1. Build or obtain trusted Xray/V2Ray/tun2socks binaries for the Android ABIs you plan to support, such as:
    - `arm64-v8a`
    - `armeabi-v7a`
    - `x86_64`
 2. Add the binaries under an app-private delivery path, commonly one of these approaches:
    - `app/src/main/jniLibs/<abi>/` for packaged native libraries, or
    - `app/src/main/assets/<abi>/` for executable assets copied to app-private storage at runtime.
-3. Update `V2RayManager` to:
-   - write the pasted JSON config to an app-private file,
-   - copy/extract the matching ABI binary if needed,
-   - mark the binary executable when appropriate,
-   - start the core process with the generated config path,
+3. Update `TunnelCoreManager` to:
+   - write the selected/generated JSON config to an app-private file,
+   - copy or extract the matching ABI binary when needed,
+   - mark executable assets executable when appropriate,
+   - start the native core process with the generated config path,
+   - bridge the `VpnService` TUN file descriptor into Xray/V2Ray/tun2socks,
    - monitor process health and logs,
    - stop the process when the VPN disconnects.
-4. Connect `MyVpnService`'s TUN file descriptor to the core's expected Android TUN, SOCKS, or dokodemo-door integration path.
-5. Review V2Ray/Xray licensing and distribution requirements before shipping binaries.
-
-## How to build APK in Android Studio
-
-1. Open `android-vpn-app` in Android Studio.
-2. Wait for Gradle sync to finish successfully.
-3. Select a build variant, usually **debug**.
-4. Build a debug APK from **Build > Build Bundle(s) / APK(s) > Build APK(s)**.
-5. For a release APK, configure signing in Android Studio, then use **Build > Generate Signed Bundle / APK**.
-
-From a local machine with Android SDK installed, you can also run Gradle from the `android-vpn-app` folder. If a Gradle wrapper is added later, prefer `./gradlew`; otherwise use a locally installed Gradle version compatible with the Android Gradle Plugin:
-
-```bash
-gradle assembleDebug
-```
-
-This Codex environment may not include Android SDK tooling. If `ANDROID_HOME` is not available, do not expect APK builds to run here; build locally in Android Studio or use the GitHub Actions workflow instead.
-
-## How to download the debug APK from GitHub Actions
-
-The repository includes a GitHub Actions workflow at `.github/workflows/android-build.yml` that builds the debug APK on a GitHub-hosted Ubuntu runner with JDK 17, Android SDK packages, and Gradle. To get the generated APK without building locally in Android Studio:
-
-1. Merge this PR into `main`.
-2. Go to the GitHub repository in your browser.
-3. Open the **Actions** tab.
-4. Open the latest **Android VPN App Build** workflow run.
-5. Download the `android-vpn-app-debug-apk` artifact from the workflow run page.
-6. Install the APK on Android after allowing installation from unknown sources for the app you use to open the APK, such as your browser or file manager.
-
-Remember: this APK is still a starter VPN app. It can exercise the Android `VpnService` flow and create a placeholder VPN interface, but real V2Ray/Xray native core integration is still TODO.
+4. Update `MyVpnService` routing and DNS behavior to match the chosen core integration approach.
+5. Review Xray/V2Ray/tun2socks licensing, security, and distribution requirements before shipping binaries.
 
 ## Required Android permissions
 
