@@ -117,6 +117,7 @@ class CoreBridge(private val context: Context) {
             configFile.parentFile?.mkdirs()
             configFile.writeText(profile.toXrayJson())
             Log.i(TAG_CONFIG, "Generated Xray config for server=${profile.server.id} (${profile.server.host}:${profile.server.port}) at ${configFile.absolutePath}.")
+            Log.i(TAG_CONFIG, "VLESS/WS/TLS config parsed: network=${profile.server.type}, security=${profile.server.security}, sni=${profile.server.sni}, path=${profile.server.wsPath}, allowInsecure=${profile.server.allowInsecure}.")
             configFile
         }.onFailure { error ->
             status = Status.Error
@@ -279,7 +280,9 @@ class CoreBridge(private val context: Context) {
             Libv2ray.initV2Env(context.filesDir.absolutePath)
 
             val configContent = configFile.readText()
+            Log.i(TAG_CONFIG, "Testing generated Xray config before core start: ${configFile.absolutePath}.")
             Libv2ray.testConfig(configContent)
+            Log.i(TAG_CONFIG, "Generated Xray config passed libv2ray validation.")
 
             val supportSet = object : V2RayVPNServiceSupportsSet {
                 override fun setup(conf: String): Long = 0L
@@ -292,6 +295,7 @@ class CoreBridge(private val context: Context) {
                 }
             }
 
+            Log.i(TAG_V2RAY, "Creating libv2ray point and starting runLoop thread.")
             val point = Libv2ray.newV2RayPoint(supportSet, false)
             point.setConfigureFileContent(configContent)
             point.setDomainName("")
@@ -327,6 +331,7 @@ class CoreBridge(private val context: Context) {
                 throw IllegalStateException("V2Ray run loop exited before routing started.")
             }
 
+            Log.i(TAG_TUN2SOCKS, "Detaching Android TUN file descriptor for tun2socks.")
             val tunFd = vpnInterface.detachFd()
             detachedTunFd = tunFd
             tun2socksProcess = startTun2Socks(tun2socks, tunFd)
@@ -375,6 +380,7 @@ class CoreBridge(private val context: Context) {
                 "--socks-server-addr", "127.0.0.1:10808",
                 "--udpgw-remote-server-addr", "127.0.0.1:7300"
             )
+            Log.i(TAG_TUN2SOCKS, "Starting tun2socks command: ${command.joinToString(" ")}.")
             val earlyOutput = StringBuilder()
             val process = ProcessBuilder(command)
                 .redirectErrorStream(true)

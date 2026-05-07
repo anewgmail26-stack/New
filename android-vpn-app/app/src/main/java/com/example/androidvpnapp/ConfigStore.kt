@@ -1,6 +1,7 @@
 package com.example.androidvpnapp
 
 import android.content.Context
+import android.util.Log
 import org.json.JSONArray
 
 class ConfigStore(private val context: Context) {
@@ -36,18 +37,41 @@ class ConfigStore(private val context: Context) {
 
     fun loadDnsEnabled(): Boolean = prefs.getBoolean(KEY_DNS_ENABLED, false)
 
-    fun loadServers(): List<TunnelServer> = loadAssetServers().ifEmpty { SampleTunnelCatalog.servers }
+    fun loadServers(): List<TunnelServer> {
+        val savedServers = loadSavedServers()
+        if (savedServers.isNotEmpty()) return savedServers
+        return loadAssetServers().ifEmpty { SampleTunnelCatalog.servers }
+    }
 
-    private fun loadAssetServers(): List<TunnelServer> = runCatching {
+    private fun loadSavedServers(): List<TunnelServer> {
+        val json = prefs.getString(KEY_SERVER_JSON, "").orEmpty()
+        if (json.isBlank()) return emptyList()
+        return try {
+            parseServers(json, "saved server JSON")
+        } catch (error: Throwable) {
+            Log.e(TAG, "Failed to parse saved server JSON.", error)
+            emptyList()
+        }
+    }
+
+    private fun loadAssetServers(): List<TunnelServer> = try {
         val json = context.assets.open(SERVERS_ASSET).bufferedReader().use { it.readText() }
+        parseServers(json, SERVERS_ASSET)
+    } catch (error: Throwable) {
+        Log.e(TAG, "Failed to load asset server list from $SERVERS_ASSET.", error)
+        emptyList()
+    }
+
+    private fun parseServers(json: String, source: String): List<TunnelServer> {
         val array = JSONArray(json)
-        (0 until array.length())
+        return (0 until array.length())
             .map { index -> TunnelServer.fromJson(array.getJSONObject(index)) }
+            .onEach { server ->
+                Log.i(TAG, "Config parsed from $source: id=${server.id}, host=${server.host}, port=${server.port}, network=${server.type}, security=${server.security}, sni=${server.sni}, path=${server.wsPath}, allowInsecure=${server.allowInsecure}.")
+            }
             .filter { it.enabled }
-            .filter { it.port == V2RAY_PORT }
             .sortedWith(compareBy<TunnelServer> { it.sortOrder }.thenBy { it.name })
-            .take(1)
-    }.getOrDefault(emptyList())
+    }
 
     fun saveServerJson(json: String) {
         JSONArray(json)
@@ -68,6 +92,6 @@ class ConfigStore(private val context: Context) {
         private const val KEY_DNS_ENABLED = "dns_enabled"
         private const val KEY_SERVER_JSON = "server_json"
         private const val SERVERS_ASSET = "servers.json"
-        private const val V2RAY_PORT = 80
+        private const val TAG = "ConfigStore"
     }
 }
