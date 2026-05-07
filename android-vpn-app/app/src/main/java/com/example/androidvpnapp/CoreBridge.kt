@@ -31,6 +31,8 @@ class CoreBridge(private val context: Context) {
         profile == null -> Status.Stopped
         detectNativeLibraries().core == null -> Status.MissingCore
         detectNativeLibraries().tun2socks == null -> Status.MissingTun2Socks
+        detectNativeLibraries().gojni == null -> Status.MissingGoJni
+        !isNativeRuntimeStartAvailable() -> Status.StartApiNotWired
         else -> Status.Ready
     }
 
@@ -58,6 +60,12 @@ class CoreBridge(private val context: Context) {
                 installedFile = File(nativeDir, TUN2SOCKS_LIBRARY).takeIf { it.isFile },
                 sourcePath = sourceAbiLibs[abi to TUN2SOCKS_LIBRARY]
             )
+            installed += NativeLibrary(
+                name = GOJNI_LIBRARY,
+                abi = abi,
+                installedFile = File(nativeDir, GOJNI_LIBRARY).takeIf { it.isFile },
+                sourcePath = sourceAbiLibs[abi to GOJNI_LIBRARY]
+            )
         }
 
         val supportedAbiOrder = Build.SUPPORTED_ABIS.toList().ifEmpty { EXPECTED_ABIS }
@@ -71,13 +79,17 @@ class CoreBridge(private val context: Context) {
             .filter { it.name == TUN2SOCKS_LIBRARY }
             .sortedBy { supportedAbiOrder.indexOf(it.abi).let { index -> if (index < 0) Int.MAX_VALUE else index } }
             .firstOrNull()
+        val gojni = available
+            .filter { it.name == GOJNI_LIBRARY }
+            .sortedBy { supportedAbiOrder.indexOf(it.abi).let { index -> if (index < 0) Int.MAX_VALUE else index } }
+            .firstOrNull()
 
-        return NativeCoreInstall(core = core, tun2socks = tun2socks, discovered = available)
+        return NativeCoreInstall(core = core, tun2socks = tun2socks, gojni = gojni, discovered = available)
     }
 
     fun areRequiredLibrariesInstalled(): Boolean {
         val install = detectNativeLibraries()
-        return install.core != null && install.tun2socks != null
+        return install.core != null && install.tun2socks != null && install.gojni != null
     }
 
     fun isNativeRuntimeStartAvailable(): Boolean = NativeRuntimeAdapter().isStartAvailable()
@@ -103,19 +115,20 @@ class CoreBridge(private val context: Context) {
         val install = detectNativeLibraries()
         val core = install.core ?: return fail(Status.MissingCore, "Missing libxray.so or libv2ray.so for ${EXPECTED_ABIS.joinToString()}.")
         val tun2socks = install.tun2socks ?: return fail(Status.MissingTun2Socks, "Missing libtun2socks.so for ${EXPECTED_ABIS.joinToString()}.")
+        val gojni = install.gojni ?: return fail(Status.MissingGoJni, "Missing libgojni.so for ${EXPECTED_ABIS.joinToString()}.")
         if (vpnInterface == null) {
             return fail(Status.Error, "Android VPN TUN interface was not established.")
         }
 
         status = Status.Starting
         selectedCore = core
-        Log.i(TAG, "Prepared ${core.name} (${core.abi}) with ${tun2socks.name}; config=${generated.absolutePath}.")
+        Log.i(TAG, "Prepared ${core.name} (${core.abi}) with ${tun2socks.name} and ${gojni.name}; config=${generated.absolutePath}.")
 
         val adapter = NativeRuntimeAdapter()
         if (!adapter.isStartAvailable()) {
             return fail(
-                Status.Error,
-                "Native libraries were found, but no executable/JNI wrapper is implemented to start ${core.name} and tun2socks. Add a real AAR/JNI adapter or executable binary before enabling traffic."
+                Status.StartApiNotWired,
+                START_API_NOT_WIRED_MESSAGE
             )
         }
 
@@ -155,7 +168,7 @@ class CoreBridge(private val context: Context) {
      * for the exact jniLibs locations this bridge expects before packaging.
      */
     private fun expectedSourceLibraries(): Map<Pair<String, String>, String> = EXPECTED_ABIS.flatMap { abi ->
-        (CORE_LIBRARY_NAMES + TUN2SOCKS_LIBRARY).map { name ->
+        (CORE_LIBRARY_NAMES + TUN2SOCKS_LIBRARY + GOJNI_LIBRARY).map { name ->
             (abi to name) to "app/src/main/jniLibs/$abi/$name"
         }
     }.toMap()
@@ -163,6 +176,8 @@ class CoreBridge(private val context: Context) {
     enum class Status(val label: String) {
         MissingCore("Missing Xray/V2Ray core"),
         MissingTun2Socks("Missing tun2socks"),
+        MissingGoJni("Missing gojni"),
+        StartApiNotWired("Native core files present, start API not wired"),
         Ready("Ready"),
         Starting("Starting"),
         Running("Running"),
@@ -183,6 +198,7 @@ class CoreBridge(private val context: Context) {
     data class NativeCoreInstall(
         val core: NativeLibrary?,
         val tun2socks: NativeLibrary?,
+        val gojni: NativeLibrary?,
         val discovered: List<NativeLibrary>
     )
 
@@ -212,5 +228,8 @@ class CoreBridge(private val context: Context) {
         private val EXPECTED_ABIS = listOf("arm64-v8a", "armeabi-v7a")
         private val CORE_LIBRARY_NAMES = listOf("libxray.so", "libv2ray.so")
         private const val TUN2SOCKS_LIBRARY = "libtun2socks.so"
+        private const val GOJNI_LIBRARY = "libgojni.so"
+        private const val START_API_NOT_WIRED_MESSAGE =
+            "Native core files present, start API not wired. Add a documented Java/Kotlin JNI wrapper, AAR, or source API before enabling traffic."
     }
 }

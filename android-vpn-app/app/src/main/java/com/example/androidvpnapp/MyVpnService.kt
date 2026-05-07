@@ -47,7 +47,9 @@ class MyVpnService : VpnService() {
 
         val coreStatus = tunnelCoreManager.getStatus(profile)
         if (coreStatus == TunnelCoreManager.CoreStatus.CORE_NOT_INSTALLED ||
-            coreStatus == TunnelCoreManager.CoreStatus.TUN2SOCKS_NOT_INSTALLED
+            coreStatus == TunnelCoreManager.CoreStatus.TUN2SOCKS_NOT_INSTALLED ||
+            coreStatus == TunnelCoreManager.CoreStatus.GOJNI_NOT_INSTALLED ||
+            coreStatus == TunnelCoreManager.CoreStatus.START_API_NOT_WIRED
         ) {
             Log.w(TAG, "Cannot start VPN: ${coreStatus.label}.")
             stopSelf()

@@ -387,7 +387,7 @@ class MainActivity : Activity() {
         val coreManager = TunnelCoreManager(applicationContext)
         val coreStatus = coreManager.getStatusLabel(configStore.loadSelectedProfile())
         val installText = if (coreManager.areNativeCoreFilesInstalled()) {
-            "Native libraries found. A real JNI/AAR or executable start adapter is still required before traffic can run."
+            "Xray core present, tun2socks present, and gojni present. Native core files present, start API not wired. A documented Java/Kotlin wrapper, AAR, or source API is still required before traffic can run.\n${coreManager.describeNativeCoreInstall()}"
         } else {
             "Missing required native libraries.\n${coreManager.describeNativeCoreInstall()}"
         }
@@ -491,7 +491,9 @@ class MainActivity : Activity() {
         val coreManager = TunnelCoreManager(applicationContext)
         val coreStatus = coreManager.getStatus(profile)
         if (coreStatus == TunnelCoreManager.CoreStatus.CORE_NOT_INSTALLED ||
-            coreStatus == TunnelCoreManager.CoreStatus.TUN2SOCKS_NOT_INSTALLED
+            coreStatus == TunnelCoreManager.CoreStatus.TUN2SOCKS_NOT_INSTALLED ||
+            coreStatus == TunnelCoreManager.CoreStatus.GOJNI_NOT_INSTALLED ||
+            coreStatus == TunnelCoreManager.CoreStatus.START_API_NOT_WIRED
         ) {
             setStatus(coreStatus.label, RED)
             showToast(coreStatus.label)
@@ -505,8 +507,8 @@ class MainActivity : Activity() {
         }
 
         if (!coreManager.isNativeRuntimeStartAvailable()) {
-            setStatus(TunnelCoreManager.CoreStatus.ERROR.label, RED)
-            showToast("Add a real JNI/AAR or executable native start adapter first.")
+            setStatus(TunnelCoreManager.CoreStatus.START_API_NOT_WIRED.label, RED)
+            showToast(TunnelCoreManager.CoreStatus.START_API_NOT_WIRED.label)
             return
         }
 
