@@ -14,11 +14,11 @@ import java.io.IOException
 
 class MyVpnService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
-    private lateinit var v2RayManager: V2RayManager
+    private lateinit var tunnelCoreManager: TunnelCoreManager
 
     override fun onCreate() {
         super.onCreate()
-        v2RayManager = V2RayManager(applicationContext)
+        tunnelCoreManager = TunnelCoreManager(applicationContext)
         createNotificationChannel()
     }
 
@@ -37,39 +37,45 @@ class MyVpnService : VpnService() {
     }
 
     private fun connect() {
-        val jsonConfig = ConfigStore(applicationContext).loadV2RayConfig()
+        val configStore = ConfigStore(applicationContext)
+        val jsonConfig = configStore.loadV2RayConfig()
         if (jsonConfig.isBlank()) {
-            Log.w(TAG, "Cannot start VPN: V2Ray config is empty.")
+            Log.w(TAG, "Cannot start VPN: tunnel config is empty.")
             stopSelf()
             return
         }
 
         startForeground(NOTIFICATION_ID, buildNotification())
 
-        val result = v2RayManager.start(jsonConfig)
-        if (result.isFailure) {
-            Log.e(TAG, "Cannot start V2Ray manager.", result.exceptionOrNull())
-            stopForegroundCompat()
-            stopSelf()
-            return
-        }
-
         try {
             // This creates a real Android VPN TUN interface. Traffic forwarding requires the native core
-            // integration described in V2RayManager; until then the tunnel is a safe placeholder.
-            vpnInterface = Builder()
+            // integration described in TunnelCoreManager; until then the tunnel is a safe placeholder.
+            val builder = Builder()
                 .setSession(getString(R.string.app_name))
                 .addAddress("10.10.0.2", 32)
-                .addDnsServer("1.1.1.1")
                 .addRoute("0.0.0.0", 0)
-                .establish()
+
+            if (configStore.loadDnsEnabled()) {
+                builder.addDnsServer("1.1.1.1")
+                builder.addDnsServer("8.8.8.8")
+            }
+
+            vpnInterface = builder.establish()
 
             if (vpnInterface == null) {
                 Log.e(TAG, "VpnService.Builder.establish() returned null. User approval may be missing.")
                 disconnect()
-            } else {
-                Log.i(TAG, "VPN interface established.")
+                return
             }
+
+            val result = tunnelCoreManager.start(jsonConfig, vpnInterface)
+            if (result.isFailure) {
+                Log.e(TAG, "Cannot start tunnel core manager.", result.exceptionOrNull())
+                disconnect()
+                return
+            }
+
+            Log.i(TAG, "VPN interface established with placeholder tunnel core.")
         } catch (error: Exception) {
             Log.e(TAG, "Failed to establish VPN interface.", error)
             disconnect()
@@ -77,7 +83,7 @@ class MyVpnService : VpnService() {
     }
 
     private fun disconnect() {
-        v2RayManager.stop()
+        tunnelCoreManager.stop()
         try {
             vpnInterface?.close()
         } catch (error: IOException) {
