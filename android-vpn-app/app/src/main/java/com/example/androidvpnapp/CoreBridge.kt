@@ -6,6 +6,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import go.Seq
 import java.io.File
+import java.io.IOException
 import libv2ray.Libv2ray
 import libv2ray.V2RayPoint
 import libv2ray.V2RayVPNServiceSupportsSet
@@ -102,6 +103,7 @@ class CoreBridge(private val context: Context) {
         return runCatching {
             configFile.parentFile?.mkdirs()
             configFile.writeText(profile.toXrayJson())
+            Log.i(TAG_CONFIG, "Generated Xray config for server=${profile.server.id} (${profile.server.host}:${profile.server.port}) at ${configFile.absolutePath}.")
             configFile
         }.onFailure { error ->
             status = Status.Error
@@ -110,8 +112,11 @@ class CoreBridge(private val context: Context) {
     }
 
     fun start(profile: TunnelProfile?, vpnInterface: ParcelFileDescriptor?, protectSocket: (Int) -> Boolean = { false }): Result<Unit> {
-        val generated = generateAndSaveConfig(profile).getOrElse { return Result.failure(it) }
+        val selectedProfile = profile ?: return fail(Status.Error, "no selected profile.")
+        Log.i(TAG_PROFILE, "Selected server/profile: id=${selectedProfile.server.id}, name=${selectedProfile.server.name}, host=${selectedProfile.server.host}:${selectedProfile.server.port}, type=${selectedProfile.server.type}, security=${selectedProfile.server.security}, payload=${selectedProfile.payloadTweak.id}.")
+        val generated = generateAndSaveConfig(selectedProfile).getOrElse { return Result.failure(toStartFailure(it)) }
         val install = detectNativeLibraries()
+        Log.i(TAG_NATIVE, "Native library detection: core=${install.core?.displayPath ?: "missing"}, tun2socks=${install.tun2socks?.displayPath ?: "missing"}, gojni=${install.gojni?.displayPath ?: "missing"}.")
         val core = install.core ?: return fail(Status.MissingCore, "Missing libxray.so or libv2ray.so for ${EXPECTED_ABIS.joinToString()}.")
         val tun2socks = install.tun2socks ?: return fail(Status.MissingTun2Socks, "Missing libtun2socks.so for ${EXPECTED_ABIS.joinToString()}.")
         val gojni = install.gojni ?: return fail(Status.MissingGoJni, "Missing libgojni.so for ${EXPECTED_ABIS.joinToString()}.")
@@ -134,10 +139,16 @@ class CoreBridge(private val context: Context) {
             .onSuccess {
                 status = Status.Running
                 lastError = null
+                Log.i(TAG_V2RAY, "V2Ray start result: success for config=${generated.absolutePath}.")
+                Log.i(TAG_TUN2SOCKS, "tun2socks start result: success for ${tun2socks.displayPath}.")
             }
             .onFailure { error ->
+                val failure = toStartFailure(error)
                 status = Status.Error
-                lastError = error.message
+                lastError = failure.message
+                Log.e(TAG_V2RAY, "V2Ray start result: failed: $lastError", error)
+                Log.e(TAG_TUN2SOCKS, "tun2socks start result: failed or released after V2Ray failure: $lastError", error)
+                NativeRuntimeAdapter.stop(selectedCore)
             }
     }
 
@@ -155,9 +166,21 @@ class CoreBridge(private val context: Context) {
 
     private fun fail(newStatus: Status, message: String): Result<Unit> {
         status = newStatus
-        lastError = message
-        Log.w(TAG, message)
-        return Result.failure(IllegalStateException(message))
+        val failure = IllegalStateException("Start failed: $message")
+        lastError = failure.message
+        Log.w(TAG, failure.message.orEmpty())
+        return Result.failure(failure)
+    }
+
+    private fun toStartFailure(error: Throwable): Throwable {
+        val reason = when (error) {
+            is UnsatisfiedLinkError -> "native library could not be loaded: ${error.message}"
+            is NoClassDefFoundError -> "native runtime class is missing: ${error.message}"
+            is IllegalStateException -> error.message ?: "illegal native runtime state"
+            is IOException -> "I/O error while starting native runtime: ${error.message}"
+            else -> error.message ?: error::class.java.simpleName
+        }
+        return IllegalStateException(if (reason.startsWith("Start failed:")) reason else "Start failed: $reason", error)
     }
 
     /**
@@ -206,11 +229,27 @@ class CoreBridge(private val context: Context) {
         private var tun2socksProcess: Process? = null
         private var detachedTunFd: Int? = null
 
-        fun isStartAvailable(): Boolean = runCatching {
+        fun isStartAvailable(): Boolean = try {
             Seq.touch()
             Libv2ray.touch()
+            Log.i(TAG_NATIVE, "Native runtime API detected: libgojni/libv2ray wrappers are loadable.")
             true
-        }.getOrDefault(false)
+        } catch (error: UnsatisfiedLinkError) {
+            Log.e(TAG_NATIVE, "Native runtime API detection failed: unsatisfied link.", error)
+            false
+        } catch (error: NoClassDefFoundError) {
+            Log.e(TAG_NATIVE, "Native runtime API detection failed: missing class.", error)
+            false
+        } catch (error: IllegalStateException) {
+            Log.e(TAG_NATIVE, "Native runtime API detection failed: illegal state.", error)
+            false
+        } catch (error: IOException) {
+            Log.e(TAG_NATIVE, "Native runtime API detection failed: I/O error.", error)
+            false
+        } catch (error: Throwable) {
+            Log.e(TAG_NATIVE, "Native runtime API detection failed.", error)
+            false
+        }
 
         fun start(
             context: Context,
@@ -219,7 +258,7 @@ class CoreBridge(private val context: Context) {
             configFile: File,
             vpnInterface: ParcelFileDescriptor,
             protectSocket: (Int) -> Boolean
-        ): Result<Unit> = runCatching {
+        ): Result<Unit> = try {
             stop(core)
             Seq.touch()
             Seq.setContext(context.applicationContext)
@@ -244,7 +283,21 @@ class CoreBridge(private val context: Context) {
             point.setConfigureFileContent(configContent)
             point.setDomainName("")
             v2rayPoint = point
-            v2rayThread = Thread({ point.runLoop(false) }, "xray-run-loop").apply {
+            v2rayThread = Thread({
+                try {
+                    point.runLoop(false)
+                } catch (error: UnsatisfiedLinkError) {
+                    Log.e(TAG_V2RAY, "V2Ray runLoop failed: unsatisfied link.", error)
+                } catch (error: NoClassDefFoundError) {
+                    Log.e(TAG_V2RAY, "V2Ray runLoop failed: missing class.", error)
+                } catch (error: IllegalStateException) {
+                    Log.e(TAG_V2RAY, "V2Ray runLoop failed: illegal state.", error)
+                } catch (error: IOException) {
+                    Log.e(TAG_V2RAY, "V2Ray runLoop failed: I/O error.", error)
+                } catch (error: Throwable) {
+                    Log.e(TAG_V2RAY, "V2Ray runLoop failed.", error)
+                }
+            }, "xray-run-loop").apply {
                 isDaemon = true
                 start()
             }
@@ -253,7 +306,24 @@ class CoreBridge(private val context: Context) {
             val tunFd = vpnInterface.detachFd()
             detachedTunFd = tunFd
             tun2socksProcess = startTun2Socks(tun2socks, tunFd)
-            Log.i(TAG, "Started ${core.name} through libgojni and ${tun2socks.name} with tun fd $tunFd.")
+            Log.i(TAG_V2RAY, "V2Ray start result: runLoop launched for ${core.name}.")
+            Log.i(TAG_TUN2SOCKS, "tun2socks start result: process launched for ${tun2socks.name} with tun fd $tunFd.")
+            Result.success(Unit)
+        } catch (error: UnsatisfiedLinkError) {
+            stop(core)
+            Result.failure(IllegalStateException("Start failed: native library could not be loaded: ${error.message}", error))
+        } catch (error: NoClassDefFoundError) {
+            stop(core)
+            Result.failure(IllegalStateException("Start failed: native runtime class is missing: ${error.message}", error))
+        } catch (error: IllegalStateException) {
+            stop(core)
+            Result.failure(IllegalStateException("Start failed: ${error.message ?: "illegal native runtime state"}", error))
+        } catch (error: IOException) {
+            stop(core)
+            Result.failure(IllegalStateException("Start failed: I/O error while starting native runtime: ${error.message}", error))
+        } catch (error: Throwable) {
+            stop(core)
+            Result.failure(IllegalStateException("Start failed: ${error.message ?: error::class.java.simpleName}", error))
         }
 
         fun stop(core: NativeLibrary?) {
@@ -289,6 +359,11 @@ class CoreBridge(private val context: Context) {
 
     companion object {
         private const val TAG = "CoreBridge"
+        private const val TAG_PROFILE = "VpnProfile"
+        private const val TAG_CONFIG = "XrayConfig"
+        private const val TAG_NATIVE = "NativeRuntime"
+        private const val TAG_V2RAY = "V2RayStart"
+        private const val TAG_TUN2SOCKS = "Tun2SocksStart"
         private const val GENERATED_CONFIG_FILE = "xray-generated-config.json"
         private val EXPECTED_ABIS = listOf("arm64-v8a", "armeabi-v7a")
         private val CORE_LIBRARY_NAMES = listOf("libxray.so", "libv2ray.so")

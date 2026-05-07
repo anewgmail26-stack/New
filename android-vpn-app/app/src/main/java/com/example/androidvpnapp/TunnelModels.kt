@@ -17,7 +17,10 @@ data class TunnelServer(
     val uuid: String,
     val wsPath: String = "/",
     val hostHeader: String = "",
-    val flow: String = ""
+    val flow: String = "",
+    val enabled: Boolean = true,
+    val premiumLabel: String = "",
+    val sortOrder: Int = Int.MAX_VALUE
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("id", id)
@@ -34,6 +37,9 @@ data class TunnelServer(
         .put("wsPath", wsPath)
         .put("hostHeader", hostHeader)
         .put("flow", flow)
+        .put("enabled", enabled)
+        .put("premiumLabel", premiumLabel)
+        .put("sortOrder", sortOrder)
 
     companion object {
         fun fromJson(json: JSONObject): TunnelServer = TunnelServer(
@@ -49,8 +55,11 @@ data class TunnelServer(
             remark = json.optString("remark", json.optString("name", "VLESS Server")),
             uuid = json.getString("uuid"),
             wsPath = json.optString("wsPath", json.optString("path", "/")),
-            hostHeader = json.optString("hostHeader", ""),
-            flow = json.optString("flow", "")
+            hostHeader = json.optString("hostHeader", json.optString("wsHost", json.optString("headerHost", ""))),
+            flow = json.optString("flow", ""),
+            enabled = json.optBoolean("enabled", true),
+            premiumLabel = json.optString("premiumLabel", ""),
+            sortOrder = if (json.has("sortOrder")) json.optInt("sortOrder", Int.MAX_VALUE) else Int.MAX_VALUE
         )
     }
 }

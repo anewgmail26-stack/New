@@ -42,7 +42,10 @@ class ConfigStore(private val context: Context) {
         val json = prefs.all[KEY_SERVER_JSON] as? String
             ?: context.assets.open(SERVERS_ASSET).bufferedReader().use { it.readText() }
         val array = JSONArray(json)
-        (0 until array.length()).map { index -> TunnelServer.fromJson(array.getJSONObject(index)) }
+        (0 until array.length())
+            .map { index -> TunnelServer.fromJson(array.getJSONObject(index)) }
+            .filter { it.enabled }
+            .sortedWith(compareBy<TunnelServer> { it.sortOrder }.thenBy { it.name })
     }.getOrDefault(emptyList())
 
     fun saveServerJson(json: String) {

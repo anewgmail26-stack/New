@@ -1,5 +1,28 @@
 [
   {
+    "id": "vpn",
+    "name": "vpn",
+    "remark": "vpn",
+    "host": "shar1.knlvpn.com",
+    "port": 80,
+    "uuid": "48990253-ed95-4aac-9ad3-ad4457e50b14",
+    "protocol": "vless",
+    "network": "ws",
+    "type": "ws",
+    "security": "none",
+    "encryption": "none",
+    "sni": "",
+    "serverName": "",
+    "path": "/",
+    "wsPath": "/",
+    "hostHeader": "telegram.org",
+    "allowInsecure": false,
+    "enabled": true,
+    "premiumLabel": "free",
+    "sortOrder": 1,
+    "flow": ""
+  },
+  {
     "id": "your-vless-tls",
     "name": "Your VLESS TLS Server",
     "remark": "Update this server after deployment",
