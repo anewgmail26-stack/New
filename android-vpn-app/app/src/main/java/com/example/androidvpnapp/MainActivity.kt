@@ -60,8 +60,10 @@ class MainActivity : Activity() {
             val isConnected = intent.getBooleanExtra(MyVpnService.EXTRA_CONNECTED, false)
             Log.i(TAG, "VPN status update: connected=$isConnected, message=$message")
             if (isConnected) {
+                timerHandler.removeCallbacks(connectionTimeoutRunnable)
                 setConnectedState(true)
             } else {
+                timerHandler.removeCallbacks(connectionTimeoutRunnable)
                 setConnectedState(false, message.ifBlank { "Disconnected" })
                 if (message.startsWith("Start failed:")) showToast(message)
             }
@@ -74,6 +76,12 @@ class MainActivity : Activity() {
             if (connected || connecting) {
                 timerHandler.postDelayed(this, 1_000L)
             }
+        }
+    }
+
+    private val connectionTimeoutRunnable = Runnable {
+        if (connecting && !connected) {
+            setConnectedState(false, "Start failed: VPN service did not report a connection. Check native runtime logs.")
         }
     }
 
@@ -102,6 +110,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         timerHandler.removeCallbacks(timerRunnable)
+        timerHandler.removeCallbacks(connectionTimeoutRunnable)
         super.onDestroy()
     }
 
@@ -500,7 +509,7 @@ class MainActivity : Activity() {
             return
         }
 
-        if (!coreManager.isNativeRuntimeStartAvailable()) {
+        if (!coreManager.isNativeRuntimePackaged()) {
             setStatus(TunnelCoreManager.CoreStatus.START_API_NOT_WIRED.label, RED)
             showToast(TunnelCoreManager.CoreStatus.START_API_NOT_WIRED.label)
             return
@@ -520,12 +529,15 @@ class MainActivity : Activity() {
         connecting = true
         connected = false
         setStatus(TunnelCoreManager.CoreStatus.CONNECTING.label, GREEN)
+        timerHandler.removeCallbacks(connectionTimeoutRunnable)
+        timerHandler.postDelayed(connectionTimeoutRunnable, CONNECTION_TIMEOUT_MS)
         startStopButton.text = "STOP"
         startStopButton.setTextColor(GREEN)
         startStopButton.background = oval(Color.WHITE, GREEN, dp(3))
     }
 
     private fun setConnectedState(isConnected: Boolean, disconnectedStatus: String = "Disconnected") {
+        timerHandler.removeCallbacks(connectionTimeoutRunnable)
         connected = isConnected
         connecting = false
         if (isConnected) {
@@ -559,7 +571,7 @@ class MainActivity : Activity() {
     private fun startVpnService(action: String): Boolean {
         val intent = Intent(this, MyVpnService::class.java).setAction(action)
         return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (action == MyVpnService.ACTION_CONNECT && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(intent)
             } else {
                 startService(intent)
@@ -646,6 +658,7 @@ class MainActivity : Activity() {
     companion object {
         private const val REQUEST_VPN_PERMISSION = 100
         private const val REQUEST_NOTIFICATIONS = 101
+        private const val CONNECTION_TIMEOUT_MS = 15_000L
         private const val TAG = "MainActivity"
         private val GREEN = Color.rgb(0, 155, 64)
         private val GREEN_DARK = Color.rgb(0, 120, 52)
