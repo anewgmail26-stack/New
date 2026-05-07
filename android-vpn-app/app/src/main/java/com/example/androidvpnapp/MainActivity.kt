@@ -3,7 +3,10 @@ package com.example.androidvpnapp
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
@@ -15,6 +18,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -48,14 +52,30 @@ class MainActivity : Activity() {
 
     private val timerHandler = Handler(Looper.getMainLooper())
     private var connected = false
+    private var connecting = false
     private var connectedAt = 0L
     private var servers = emptyList<TunnelServer>()
     private val payloadTweaks = SampleTunnelCatalog.payloadTweaks
 
+    private val vpnStatusReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != MyVpnService.ACTION_STATUS) return
+            val message = intent.getStringExtra(MyVpnService.EXTRA_STATUS_MESSAGE).orEmpty()
+            val isConnected = intent.getBooleanExtra(MyVpnService.EXTRA_CONNECTED, false)
+            Log.i(TAG, "VPN status update: connected=$isConnected, message=$message")
+            if (isConnected) {
+                setConnectedState(true)
+            } else {
+                setConnectedState(false, message.ifBlank { "Disconnected" })
+                if (message.startsWith("Start failed:")) showToast(message)
+            }
+        }
+    }
+
     private val timerRunnable = object : Runnable {
         override fun run() {
             updateDuration()
-            if (connected) {
+            if (connected || connecting) {
                 timerHandler.postDelayed(this, 1_000L)
             }
         }
@@ -68,6 +88,22 @@ class MainActivity : Activity() {
         requestNotificationPermissionIfNeeded()
     }
 
+    override fun onStart() {
+        super.onStart()
+        val filter = IntentFilter(MyVpnService.ACTION_STATUS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(vpnStatusReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(vpnStatusReceiver, filter)
+        }
+    }
+
+    override fun onStop() {
+        runCatching { unregisterReceiver(vpnStatusReceiver) }
+        super.onStop()
+    }
+
     override fun onDestroy() {
         timerHandler.removeCallbacks(timerRunnable)
         super.onDestroy()
@@ -77,9 +113,9 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_VPN_PERMISSION) {
             if (resultCode == RESULT_OK) {
-                startVpnService(MyVpnService.ACTION_CONNECT)
-                setStatus(TunnelCoreManager.CoreStatus.CONNECTING.label, GREEN)
-                setConnectedState(true)
+                if (startVpnService(MyVpnService.ACTION_CONNECT)) {
+                    setConnectingState()
+                }
             } else {
                 setStatus("Disconnected", RED)
                 showToast("VPN permission was denied.")
@@ -476,7 +512,7 @@ class MainActivity : Activity() {
     }
 
     private fun toggleConnection() {
-        if (connected) {
+        if (connected || connecting) {
             startVpnService(MyVpnService.ACTION_DISCONNECT)
             setConnectedState(false)
             return
@@ -517,14 +553,24 @@ class MainActivity : Activity() {
         if (permissionIntent != null) {
             startActivityForResult(permissionIntent, REQUEST_VPN_PERMISSION)
         } else {
-            startVpnService(MyVpnService.ACTION_CONNECT)
-            setStatus(TunnelCoreManager.CoreStatus.CONNECTING.label, GREEN)
-            setConnectedState(true)
+            if (startVpnService(MyVpnService.ACTION_CONNECT)) {
+                setConnectingState()
+            }
         }
     }
 
-    private fun setConnectedState(isConnected: Boolean) {
+    private fun setConnectingState() {
+        connecting = true
+        connected = false
+        setStatus(TunnelCoreManager.CoreStatus.CONNECTING.label, GREEN)
+        startStopButton.text = "STOP"
+        startStopButton.setTextColor(GREEN)
+        startStopButton.background = oval(Color.WHITE, GREEN, dp(3))
+    }
+
+    private fun setConnectedState(isConnected: Boolean, disconnectedStatus: String = "Disconnected") {
         connected = isConnected
+        connecting = false
         if (isConnected) {
             connectedAt = SystemClock.elapsedRealtime()
             setStatus("Connected", GREEN)
@@ -534,7 +580,7 @@ class MainActivity : Activity() {
             timerHandler.removeCallbacks(timerRunnable)
             timerHandler.post(timerRunnable)
         } else {
-            setStatus("Disconnected", RED)
+            setStatus(disconnectedStatus, RED)
             startStopButton.text = "START"
             startStopButton.setTextColor(RED)
             startStopButton.background = oval(Color.WHITE, RED, dp(3))
@@ -553,13 +599,32 @@ class MainActivity : Activity() {
         durationText.text = "VPN Duration : %02d:%02d:%02d".format(hours, minutes, seconds)
     }
 
-    private fun startVpnService(action: String) {
+    private fun startVpnService(action: String): Boolean {
         val intent = Intent(this, MyVpnService::class.java).setAction(action)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            true
+        } catch (error: IllegalStateException) {
+            handleStartServiceFailure(error.message ?: "could not start VPN service", error)
+            false
+        } catch (error: SecurityException) {
+            handleStartServiceFailure(error.message ?: "VPN service permission error", error)
+            false
+        } catch (error: Throwable) {
+            handleStartServiceFailure(error.message ?: error::class.java.simpleName, error)
+            false
         }
+    }
+
+    private fun handleStartServiceFailure(reason: String, error: Throwable) {
+        val message = if (reason.startsWith("Start failed:")) reason else "Start failed: $reason"
+        Log.e(TAG, message, error)
+        setConnectedState(false, message)
+        showToast(message)
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -624,6 +689,7 @@ class MainActivity : Activity() {
     companion object {
         private const val REQUEST_VPN_PERMISSION = 100
         private const val REQUEST_NOTIFICATIONS = 101
+        private const val TAG = "MainActivity"
         private val GREEN = Color.rgb(0, 155, 64)
         private val GREEN_DARK = Color.rgb(0, 120, 52)
         private val GREEN_LIGHT = Color.rgb(188, 232, 204)

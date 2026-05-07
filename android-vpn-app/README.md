@@ -43,3 +43,37 @@ If your shell defaults to another JDK, set `JAVA_HOME` to JDK 17 first.
 - This project currently includes arm64 native libraries in `app/src/main/jniLibs/arm64-v8a/`. Add matching libraries under `armeabi-v7a` if you need 32-bit devices.
 - The native libraries are extracted at install time so `libtun2socks.so` can be executed by the app process.
 - Production deployments should use real server values, secure distribution, logging/crash handling, and device testing across Android versions.
+
+## Bundled VLESS server
+
+`app/src/main/assets/servers.json` includes the free `vpn` profile first in the selector:
+
+- Address: `shar1.knlvpn.com:80`
+- UUID: `48990253-ed95-4aac-9ad3-ad4457e50b14`
+- Protocol: `vless`
+- Transport: WebSocket (`type`/`network`: `ws`)
+- Security: `none`
+- Encryption: `none`
+- WebSocket path: `/`
+- WebSocket Host header: `telegram.org`
+- SNI: empty
+- `allowInsecure`: `false`
+- `enabled`: `true`
+- `premiumLabel`: `free`
+- `sortOrder`: `1`
+
+The generated Xray config keeps the outbound protocol as `vless`, writes `streamSettings.network` as `ws`, writes `streamSettings.security` as `none`, and emits `wsSettings.path` plus `wsSettings.headers.Host` from the selected server.
+
+## START crash troubleshooting
+
+START should not terminate the app process if the native runtime fails to load or start. `MyVpnService` and `CoreBridge` now catch and log native-start failures such as `UnsatisfiedLinkError`, `NoClassDefFoundError`, `IllegalStateException`, `IOException`, and other unexpected `Throwable`s. On failure the app releases the VPN interface, stops the foreground VPN state, broadcasts a disconnected status, and shows `Start failed: <reason>` instead of claiming that the VPN is connected.
+
+Useful logcat tags while debugging START are:
+
+- `VpnProfile` for the selected server/profile.
+- `XrayConfig` for the generated config path.
+- `NativeRuntime` for native library/API detection.
+- `V2RayStart` for libv2ray start results.
+- `Tun2SocksStart` for tun2socks start results.
+
+If one of these logs says a native library or runtime API is missing/incomplete, rebuild the APK with compatible `libgojni.so`, `libxray.so`/`libv2ray.so`, and `libtun2socks.so` for the device ABI, then test START again on a physical device or emulator.
