@@ -27,7 +27,7 @@ class ConfigStore(private val context: Context) {
 
     fun loadSelectedPayloadId(): String = prefs.getString(
         KEY_SELECTED_PAYLOAD_ID,
-        SampleTunnelCatalog.payloadTweaks.first().id
+        SampleTunnelCatalog.defaultPayloadTweak.id
     ).orEmpty()
 
     fun saveDnsEnabled(enabled: Boolean) {
@@ -39,13 +39,14 @@ class ConfigStore(private val context: Context) {
     fun loadServers(): List<TunnelServer> = loadAssetServers().ifEmpty { SampleTunnelCatalog.servers }
 
     private fun loadAssetServers(): List<TunnelServer> = runCatching {
-        val json = prefs.all[KEY_SERVER_JSON] as? String
-            ?: context.assets.open(SERVERS_ASSET).bufferedReader().use { it.readText() }
+        val json = context.assets.open(SERVERS_ASSET).bufferedReader().use { it.readText() }
         val array = JSONArray(json)
         (0 until array.length())
             .map { index -> TunnelServer.fromJson(array.getJSONObject(index)) }
             .filter { it.enabled }
+            .filter { it.port == V2RAY_PORT }
             .sortedWith(compareBy<TunnelServer> { it.sortOrder }.thenBy { it.name })
+            .take(1)
     }.getOrDefault(emptyList())
 
     fun saveServerJson(json: String) {
@@ -56,10 +57,7 @@ class ConfigStore(private val context: Context) {
     fun loadSelectedProfile(): TunnelProfile? {
         val allServers = loadServers()
         val server = allServers.firstOrNull { it.id == loadSelectedServerId() } ?: allServers.firstOrNull() ?: return null
-        val payload = SampleTunnelCatalog.payloadTweaks.firstOrNull { it.id == loadSelectedPayloadId() }
-            ?: SampleTunnelCatalog.payloadTweaks.firstOrNull()
-            ?: return null
-        return TunnelProfile(server, payload, loadDnsEnabled())
+        return TunnelProfile(server, SampleTunnelCatalog.defaultPayloadTweak, loadDnsEnabled())
     }
 
     companion object {
@@ -70,5 +68,6 @@ class ConfigStore(private val context: Context) {
         private const val KEY_DNS_ENABLED = "dns_enabled"
         private const val KEY_SERVER_JSON = "server_json"
         private const val SERVERS_ASSET = "servers.json"
+        private const val V2RAY_PORT = 80
     }
 }
