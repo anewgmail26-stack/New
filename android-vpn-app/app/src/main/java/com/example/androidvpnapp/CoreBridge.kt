@@ -26,14 +26,17 @@ class CoreBridge(private val context: Context) {
     private var lastError: String? = null
     private var selectedCore: NativeLibrary? = null
 
-    fun getStatus(profile: TunnelProfile? = null): Status = when {
-        status == Status.Starting || status == Status.Running || status == Status.Error -> status
-        profile == null -> Status.Stopped
-        detectNativeLibraries().core == null -> Status.MissingCore
-        detectNativeLibraries().tun2socks == null -> Status.MissingTun2Socks
-        detectNativeLibraries().gojni == null -> Status.MissingGoJni
-        !isNativeRuntimeStartAvailable() -> Status.StartApiNotWired
-        else -> Status.Ready
+    fun getStatus(profile: TunnelProfile? = null): Status {
+        if (status == Status.Starting || status == Status.Running || status == Status.Error) return status
+        if (profile == null) return Status.Stopped
+
+        val install = detectNativeLibraries()
+        return when {
+            install.core == null -> Status.MissingCore
+            install.tun2socks == null -> Status.MissingTun2Socks
+            install.gojni == null -> Status.MissingGoJni
+            else -> Status.Ready
+        }
     }
 
     fun getStatusLabel(profile: TunnelProfile? = null): String = getStatus(profile).label
@@ -93,6 +96,15 @@ class CoreBridge(private val context: Context) {
     }
 
     fun isNativeRuntimeStartAvailable(): Boolean = NativeRuntimeAdapter.isStartAvailable()
+
+    fun isNativeRuntimePackaged(): Boolean = try {
+        Class.forName("go.Seq", false, javaClass.classLoader)
+        Class.forName("libv2ray.Libv2ray", false, javaClass.classLoader)
+        true
+    } catch (error: ClassNotFoundException) {
+        lastError = "Native runtime wrapper class is missing: ${error.message}"
+        false
+    }
 
     fun generateAndSaveConfig(profile: TunnelProfile?): Result<File> {
         if (profile == null) {

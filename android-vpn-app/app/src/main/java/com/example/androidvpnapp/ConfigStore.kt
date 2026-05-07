@@ -7,13 +7,13 @@ class ConfigStore(private val context: Context) {
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     fun saveV2RayConfig(jsonConfig: String) {
-        prefs.edit().putString(KEY_V2RAY_CONFIG, jsonConfig.trim()).apply()
+        prefs.edit().putString(KEY_V2RAY_CONFIG, jsonConfig.trim()).commit()
     }
 
     fun loadV2RayConfig(): String = prefs.getString(KEY_V2RAY_CONFIG, "").orEmpty()
 
     fun saveSelectedServerId(serverId: String) {
-        prefs.edit().putString(KEY_SELECTED_SERVER_ID, serverId).apply()
+        prefs.edit().putString(KEY_SELECTED_SERVER_ID, serverId).commit()
     }
 
     fun loadSelectedServerId(): String = prefs.getString(
@@ -22,7 +22,7 @@ class ConfigStore(private val context: Context) {
     ).orEmpty()
 
     fun saveSelectedPayloadId(payloadId: String) {
-        prefs.edit().putString(KEY_SELECTED_PAYLOAD_ID, payloadId).apply()
+        prefs.edit().putString(KEY_SELECTED_PAYLOAD_ID, payloadId).commit()
     }
 
     fun loadSelectedPayloadId(): String = prefs.getString(
@@ -31,7 +31,7 @@ class ConfigStore(private val context: Context) {
     ).orEmpty()
 
     fun saveDnsEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_DNS_ENABLED, enabled).apply()
+        prefs.edit().putBoolean(KEY_DNS_ENABLED, enabled).commit()
     }
 
     fun loadDnsEnabled(): Boolean = prefs.getBoolean(KEY_DNS_ENABLED, false)
@@ -51,7 +51,7 @@ class ConfigStore(private val context: Context) {
 
     fun saveServerJson(json: String) {
         JSONArray(json)
-        prefs.edit().putString(KEY_SERVER_JSON, json).apply()
+        prefs.edit().putString(KEY_SERVER_JSON, json).commit()
     }
 
     fun loadSelectedProfile(): TunnelProfile? {

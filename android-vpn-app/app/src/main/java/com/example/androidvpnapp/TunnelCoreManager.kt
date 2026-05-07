@@ -19,6 +19,8 @@ class TunnelCoreManager(private val context: Context) {
 
     fun isNativeRuntimeStartAvailable(): Boolean = coreBridge.isNativeRuntimeStartAvailable()
 
+    fun isNativeRuntimePackaged(): Boolean = coreBridge.isNativeRuntimePackaged()
+
     fun describeNativeCoreInstall(): String {
         val install = coreBridge.detectNativeLibraries()
         val core = install.core?.displayPath ?: "Missing libxray.so/libv2ray.so"
