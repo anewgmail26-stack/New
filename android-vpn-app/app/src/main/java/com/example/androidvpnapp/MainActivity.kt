@@ -61,7 +61,14 @@ class MainActivity : Activity() {
             Log.i(TAG, "VPN status update: connected=$isConnected, message=$message")
             if (isConnected) {
                 timerHandler.removeCallbacks(connectionTimeoutRunnable)
-                setConnectedState(true)
+                if (message.startsWith("Start failed:")) {
+                    setActiveErrorState(message)
+                    showToast(message)
+                } else if (message == "Connecting") {
+                    setConnectingState(scheduleTimeout = false)
+                } else {
+                    setConnectedState(true)
+                }
             } else {
                 timerHandler.removeCallbacks(connectionTimeoutRunnable)
                 setConnectedState(false, message.ifBlank { "Disconnected" })
@@ -118,10 +125,12 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_VPN_PERMISSION) {
             if (resultCode == RESULT_OK) {
+                Log.i(TAG, "VPN permission granted by user.")
                 if (startVpnService(MyVpnService.ACTION_CONNECT)) {
                     setConnectingState()
                 }
             } else {
+                Log.w(TAG, "VPN permission denied by user.")
                 setStatus("Disconnected", RED)
                 showToast("VPN permission was denied.")
             }
@@ -478,62 +487,52 @@ class MainActivity : Activity() {
     }
 
     private fun toggleConnection() {
+        Log.i(TAG, "Connect button clicked; connected=$connected, connecting=$connecting.")
         if (connected || connecting) {
+            Log.i(TAG, "User requested VPN disconnect.")
             startVpnService(MyVpnService.ACTION_DISCONNECT)
             setConnectedState(false)
             return
         }
 
         val profile = configStore.loadSelectedProfile()
-        if (profile == null) {
-            setStatus(TunnelCoreManager.CoreStatus.CONFIG_MISSING.label, RED)
-            showToast(TunnelCoreManager.CoreStatus.CONFIG_MISSING.label)
-            return
-        }
-
         val coreManager = TunnelCoreManager(applicationContext)
         val coreStatus = coreManager.getStatus(profile)
-        if (coreStatus == TunnelCoreManager.CoreStatus.CORE_NOT_INSTALLED ||
-            coreStatus == TunnelCoreManager.CoreStatus.TUN2SOCKS_NOT_INSTALLED ||
-            coreStatus == TunnelCoreManager.CoreStatus.GOJNI_NOT_INSTALLED ||
-            coreStatus == TunnelCoreManager.CoreStatus.START_API_NOT_WIRED
-        ) {
-            setStatus(coreStatus.label, RED)
-            showToast(coreStatus.label)
-            return
-        }
-
-        if (coreStatus == TunnelCoreManager.CoreStatus.ERROR) {
-            setStatus(coreStatus.label, RED)
-            showToast(coreManager.getLastError() ?: coreStatus.label)
-            return
-        }
-
-        if (!coreManager.isNativeRuntimePackaged()) {
-            setStatus(TunnelCoreManager.CoreStatus.START_API_NOT_WIRED.label, RED)
-            showToast(TunnelCoreManager.CoreStatus.START_API_NOT_WIRED.label)
-            return
-        }
+        Log.i(TAG, "Pre-start profile/core status: profilePresent=${profile != null}, coreStatus=$coreStatus. Service will handle failures after foreground/TUN startup.")
 
         val permissionIntent = VpnService.prepare(this)
         if (permissionIntent != null) {
+            Log.i(TAG, "VPN permission must be requested from user.")
             startActivityForResult(permissionIntent, REQUEST_VPN_PERMISSION)
         } else {
+            Log.i(TAG, "VPN permission already granted; starting VPN service.")
             if (startVpnService(MyVpnService.ACTION_CONNECT)) {
                 setConnectingState()
             }
         }
     }
 
-    private fun setConnectingState() {
+    private fun setConnectingState(scheduleTimeout: Boolean = true) {
         connecting = true
         connected = false
         setStatus(TunnelCoreManager.CoreStatus.CONNECTING.label, GREEN)
         timerHandler.removeCallbacks(connectionTimeoutRunnable)
-        timerHandler.postDelayed(connectionTimeoutRunnable, CONNECTION_TIMEOUT_MS)
+        if (scheduleTimeout) {
+            timerHandler.postDelayed(connectionTimeoutRunnable, CONNECTION_TIMEOUT_MS)
+        }
         startStopButton.text = "STOP"
         startStopButton.setTextColor(GREEN)
         startStopButton.background = oval(Color.WHITE, GREEN, dp(3))
+    }
+
+    private fun setActiveErrorState(message: String) {
+        connected = true
+        connecting = false
+        setStatus(message, RED)
+        startStopButton.text = "STOP"
+        startStopButton.setTextColor(GREEN)
+        startStopButton.background = oval(Color.WHITE, GREEN, dp(3))
+        timerHandler.removeCallbacks(timerRunnable)
     }
 
     private fun setConnectedState(isConnected: Boolean, disconnectedStatus: String = "Disconnected") {
@@ -572,10 +571,13 @@ class MainActivity : Activity() {
         val intent = Intent(this, MyVpnService::class.java).setAction(action)
         return try {
             if (action == MyVpnService.ACTION_CONNECT && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Log.i(TAG, "Calling startForegroundService for VPN connect action.")
                 startForegroundService(intent)
             } else {
+                Log.i(TAG, "Calling startService for VPN action=$action.")
                 startService(intent)
             }
+            Log.i(TAG, "VPN service start command sent: action=$action.")
             true
         } catch (error: IllegalStateException) {
             handleStartServiceFailure(error.message ?: "could not start VPN service", error)
