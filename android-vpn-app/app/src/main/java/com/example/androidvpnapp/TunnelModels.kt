@@ -14,7 +14,10 @@ data class TunnelServer(
     val encryption: String,
     val allowInsecure: Boolean,
     val remark: String,
-    val uuid: String
+    val uuid: String,
+    val wsPath: String = "/",
+    val hostHeader: String = "",
+    val flow: String = ""
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("id", id)
@@ -28,6 +31,28 @@ data class TunnelServer(
         .put("allowInsecure", allowInsecure)
         .put("remark", remark)
         .put("uuid", uuid)
+        .put("wsPath", wsPath)
+        .put("hostHeader", hostHeader)
+        .put("flow", flow)
+
+    companion object {
+        fun fromJson(json: JSONObject): TunnelServer = TunnelServer(
+            id = json.optString("id", json.optString("name", json.optString("host"))),
+            name = json.optString("name", json.optString("remark", "VLESS Server")),
+            host = json.getString("host"),
+            port = json.optInt("port", 443),
+            type = json.optString("type", json.optString("network", "tcp")),
+            security = json.optString("security", "tls"),
+            sni = json.optString("sni", json.optString("serverName", json.optString("host"))),
+            encryption = json.optString("encryption", "none"),
+            allowInsecure = json.optBoolean("allowInsecure", false),
+            remark = json.optString("remark", json.optString("name", "VLESS Server")),
+            uuid = json.getString("uuid"),
+            wsPath = json.optString("wsPath", json.optString("path", "/")),
+            hostHeader = json.optString("hostHeader", ""),
+            flow = json.optString("flow", "")
+        )
+    }
 }
 
 data class PayloadTweak(
@@ -66,8 +91,8 @@ data class TunnelProfile(
             streamSettings.put(
                 "wsSettings",
                 JSONObject()
-                    .put("path", "/")
-                    .put("headers", JSONObject().put("Host", server.sni.ifBlank { server.host }))
+                    .put("path", server.wsPath.ifBlank { "/" })
+                    .put("headers", JSONObject().put("Host", server.hostHeader.ifBlank { server.sni.ifBlank { server.host } }))
             )
         }
 
@@ -88,7 +113,7 @@ data class TunnelProfile(
                                     JSONObject()
                                         .put("id", server.uuid)
                                         .put("encryption", server.encryption)
-                                        .put("flow", "")
+                                        .put("flow", server.flow)
                                 )
                             )
                     )

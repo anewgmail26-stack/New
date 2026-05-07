@@ -79,6 +79,7 @@ class MainActivity : Activity() {
             if (resultCode == RESULT_OK) {
                 startVpnService(MyVpnService.ACTION_CONNECT)
                 setStatus(TunnelCoreManager.CoreStatus.CONNECTING.label, GREEN)
+                setConnectedState(true)
             } else {
                 setStatus("Disconnected", RED)
                 showToast("VPN permission was denied.")
@@ -387,7 +388,7 @@ class MainActivity : Activity() {
         val coreManager = TunnelCoreManager(applicationContext)
         val coreStatus = coreManager.getStatusLabel(configStore.loadSelectedProfile())
         val installText = if (coreManager.areNativeCoreFilesInstalled()) {
-            "Xray core present, tun2socks present, and gojni present. Native core files present, start API not wired. A documented Java/Kotlin wrapper, AAR, or source API is still required before traffic can run.\n${coreManager.describeNativeCoreInstall()}"
+            "Xray core present, tun2socks present, and gojni runtime wrapper present. The app can start libv2ray and route the Android TUN interface through tun2socks.\n${coreManager.describeNativeCoreInstall()}"
         } else {
             "Missing required native libraries.\n${coreManager.describeNativeCoreInstall()}"
         }
@@ -407,7 +408,7 @@ class MainActivity : Activity() {
         ))
         content.addView(toolSection(
             title = "About My Tunnel Lite",
-            body = "My Tunnel Lite prepares built-in tunnel profiles for future Xray/V2Ray native core execution. Real VPN traffic requires native core and tun2socks integration."
+            body = "My Tunnel Lite runs VLESS profiles with the packaged libv2ray/gojni runtime and routes Android VPN traffic through tun2socks."
         ))
 
         AlertDialog.Builder(this)
@@ -518,6 +519,7 @@ class MainActivity : Activity() {
         } else {
             startVpnService(MyVpnService.ACTION_CONNECT)
             setStatus(TunnelCoreManager.CoreStatus.CONNECTING.label, GREEN)
+            setConnectedState(true)
         }
     }
 

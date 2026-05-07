@@ -1,0 +1,32 @@
+[
+  {
+    "id": "your-vless-tls",
+    "name": "Your VLESS TLS Server",
+    "remark": "Update this server after deployment",
+    "host": "your.server.com",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000001",
+    "type": "tcp",
+    "security": "tls",
+    "sni": "your.server.com",
+    "encryption": "none",
+    "allowInsecure": false,
+    "flow": ""
+  },
+  {
+    "id": "your-vless-ws",
+    "name": "Your VLESS WS TLS Server",
+    "remark": "Cloudflare/WebSocket profile",
+    "host": "your.server.com",
+    "port": 443,
+    "uuid": "00000000-0000-4000-8000-000000000002",
+    "type": "ws",
+    "security": "tls",
+    "sni": "your.server.com",
+    "hostHeader": "your.server.com",
+    "wsPath": "/vless",
+    "encryption": "none",
+    "allowInsecure": false,
+    "flow": ""
+  }
+]

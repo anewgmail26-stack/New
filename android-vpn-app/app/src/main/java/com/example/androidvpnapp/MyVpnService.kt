@@ -79,7 +79,7 @@ class MyVpnService : VpnService() {
                 return
             }
 
-            val result = tunnelCoreManager.start(profile, vpnInterface)
+            val result = tunnelCoreManager.start(profile, vpnInterface) { socket -> protect(socket) }
             if (result.isFailure) {
                 Log.e(TAG, "Cannot start tunnel core manager.", result.exceptionOrNull())
                 disconnect()
