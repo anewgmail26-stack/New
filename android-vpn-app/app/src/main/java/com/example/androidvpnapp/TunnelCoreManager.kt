@@ -15,7 +15,7 @@ class TunnelCoreManager(private val context: Context) {
 
     fun getLastError(): String? = coreBridge.getLastError()
 
-    fun areNativeCoreFilesInstalled(): Boolean = coreBridge.areRequiredLibrariesInstalled()
+    fun areNativeRuntimeFilesInstalled(): Boolean = coreBridge.areRequiredLibrariesInstalled()
 
     fun isNativeRuntimeStartAvailable(): Boolean = coreBridge.isNativeRuntimeStartAvailable()
 
@@ -23,10 +23,9 @@ class TunnelCoreManager(private val context: Context) {
 
     fun describeNativeCoreInstall(): String {
         val install = coreBridge.detectNativeLibraries()
-        val core = install.core?.displayPath ?: "Missing libxray.so/libv2ray.so"
-        val tun2socks = install.tun2socks?.displayPath ?: "Missing libtun2socks.so"
         val gojni = install.gojni?.displayPath ?: "Missing libgojni.so"
-        return "Xray core: $core\nTUN routing: $tun2socks\nGo JNI: $gojni"
+        val tun2socks = install.tun2socks?.displayPath ?: "Missing libtun2socks.so"
+        return "V2Ray runtime: $gojni\nTUN routing: $tun2socks"
     }
 
     fun generateAndSaveConfig(profile: TunnelProfile?): Result<File> = coreBridge.generateAndSaveConfig(profile)
@@ -37,8 +36,7 @@ class TunnelCoreManager(private val context: Context) {
         }
 
         val preflightStatus = getStatus(profile)
-        if (preflightStatus == CoreStatus.CORE_NOT_INSTALLED ||
-            preflightStatus == CoreStatus.TUN2SOCKS_NOT_INSTALLED ||
+        if (preflightStatus == CoreStatus.TUN2SOCKS_NOT_INSTALLED ||
             preflightStatus == CoreStatus.GOJNI_NOT_INSTALLED ||
             preflightStatus == CoreStatus.START_API_NOT_WIRED
         ) {
@@ -57,7 +55,6 @@ class TunnelCoreManager(private val context: Context) {
     fun isRunning(): Boolean = coreBridge.isRunning()
 
     private fun CoreBridge.Status.toManagerStatus(): CoreStatus = when (this) {
-        CoreBridge.Status.MissingCore -> CoreStatus.CORE_NOT_INSTALLED
         CoreBridge.Status.MissingTun2Socks -> CoreStatus.TUN2SOCKS_NOT_INSTALLED
         CoreBridge.Status.MissingGoJni -> CoreStatus.GOJNI_NOT_INSTALLED
         CoreBridge.Status.StartApiNotWired -> CoreStatus.START_API_NOT_WIRED
@@ -69,9 +66,8 @@ class TunnelCoreManager(private val context: Context) {
     }
 
     enum class CoreStatus(val label: String) {
-        CORE_NOT_INSTALLED("Missing Xray/V2Ray core"),
         TUN2SOCKS_NOT_INSTALLED("Missing tun2socks"),
-        GOJNI_NOT_INSTALLED("Missing gojni"),
+        GOJNI_NOT_INSTALLED("Missing V2Ray runtime"),
         CONFIG_MISSING("Config missing"),
         START_API_NOT_WIRED("Native runtime unavailable"),
         READY("Ready"),

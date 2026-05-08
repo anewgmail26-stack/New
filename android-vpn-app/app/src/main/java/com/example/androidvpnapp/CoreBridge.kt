@@ -13,19 +13,21 @@ import libv2ray.V2RayPoint
 import libv2ray.V2RayVPNServiceSupportsSet
 
 /**
- * Bridges app-selected profiles to a packaged Xray/V2Ray core.
+ * Bridges app-selected profiles to the packaged gomobile V2Ray runtime.
  *
  * Android packages files from app/src/main/jniLibs/<abi>/ into the APK and extracts the
- * matching ABI at install time into applicationInfo.nativeLibraryDir. This bridge loads the
- * gomobile libv2ray JNI surface from libgojni.so, starts the selected VLESS config through
- * V2RayPoint.runLoop(), then launches the packaged tun2socks binary with the Android VPN TUN
- * file descriptor so device traffic is forwarded to the local SOCKS inbound.
+ * matching ABI at install time into applicationInfo.nativeLibraryDir. The runtime is provided
+ * by libgojni.so; a separate libxray.so/libv2ray.so is intentionally not required because stale
+ * standalone core files can be selected accidentally and break START. This bridge starts the
+ * selected VLESS config through V2RayPoint.runLoop(), then launches the packaged tun2socks
+ * binary with the Android VPN TUN file descriptor so device traffic is forwarded to the local
+ * SOCKS inbound.
  */
 class CoreBridge(private val context: Context) {
     private val configFile = File(context.filesDir, GENERATED_CONFIG_FILE)
     private var status: Status = Status.Stopped
     private var lastError: String? = null
-    private var selectedCore: NativeLibrary? = null
+    private var selectedRuntime: NativeLibrary? = null
 
     fun getStatus(profile: TunnelProfile? = null): Status {
         if (status == Status.Starting || status == Status.Running || status == Status.Error) return status
@@ -33,9 +35,8 @@ class CoreBridge(private val context: Context) {
 
         val install = detectNativeLibraries()
         return when {
-            install.core == null -> Status.MissingCore
-            install.tun2socks == null -> Status.MissingTun2Socks
             install.gojni == null -> Status.MissingGoJni
+            install.tun2socks == null -> Status.MissingTun2Socks
             else -> Status.Ready
         }
     }
@@ -50,14 +51,6 @@ class CoreBridge(private val context: Context) {
         val sourceAbiLibs = expectedSourceLibraries()
 
         EXPECTED_ABIS.forEach { abi ->
-            CORE_LIBRARY_NAMES.forEach { name ->
-                installed += NativeLibrary(
-                    name = name,
-                    abi = abi,
-                    installedFile = File(nativeDir, name).takeIf { it.isFile },
-                    sourcePath = sourceAbiLibs[abi to name]
-                )
-            }
             installed += NativeLibrary(
                 name = TUN2SOCKS_LIBRARY,
                 abi = abi,
@@ -74,11 +67,6 @@ class CoreBridge(private val context: Context) {
 
         val supportedAbiOrder = Build.SUPPORTED_ABIS.toList().ifEmpty { EXPECTED_ABIS }
         val available = installed.filter { it.isInstalled }
-        val core = available
-            .filter { it.name in CORE_LIBRARY_NAMES }
-            .sortedWith(compareBy<NativeLibrary> { supportedAbiOrder.indexOf(it.abi).let { index -> if (index < 0) Int.MAX_VALUE else index } }
-                .thenBy { CORE_LIBRARY_NAMES.indexOf(it.name) })
-            .firstOrNull()
         val tun2socks = available
             .filter { it.name == TUN2SOCKS_LIBRARY }
             .sortedBy { supportedAbiOrder.indexOf(it.abi).let { index -> if (index < 0) Int.MAX_VALUE else index } }
@@ -88,12 +76,12 @@ class CoreBridge(private val context: Context) {
             .sortedBy { supportedAbiOrder.indexOf(it.abi).let { index -> if (index < 0) Int.MAX_VALUE else index } }
             .firstOrNull()
 
-        return NativeCoreInstall(core = core, tun2socks = tun2socks, gojni = gojni, discovered = available)
+        return NativeCoreInstall(tun2socks = tun2socks, gojni = gojni, discovered = available)
     }
 
     fun areRequiredLibrariesInstalled(): Boolean {
         val install = detectNativeLibraries()
-        return install.core != null && install.tun2socks != null && install.gojni != null
+        return install.tun2socks != null && install.gojni != null
     }
 
     fun isNativeRuntimeStartAvailable(): Boolean = NativeRuntimeAdapter.isStartAvailable()
@@ -130,17 +118,16 @@ class CoreBridge(private val context: Context) {
         Log.i(TAG_PROFILE, "Selected server/profile: id=${selectedProfile.server.id}, name=${selectedProfile.server.name}, host=${selectedProfile.server.host}:${selectedProfile.server.port}, type=${selectedProfile.server.type}, security=${selectedProfile.server.security}, payload=${selectedProfile.payloadTweak.id}.")
         val generated = generateAndSaveConfig(selectedProfile).getOrElse { return Result.failure(toStartFailure(it)) }
         val install = detectNativeLibraries()
-        Log.i(TAG_NATIVE, "Native library detection: core=${install.core?.displayPath ?: "missing"}, tun2socks=${install.tun2socks?.displayPath ?: "missing"}, gojni=${install.gojni?.displayPath ?: "missing"}.")
-        val core = install.core ?: return fail(Status.MissingCore, "Missing libxray.so or libv2ray.so for ${EXPECTED_ABIS.joinToString()}.")
+        Log.i(TAG_NATIVE, "Native library detection: gojni=${install.gojni?.displayPath ?: "missing"}, tun2socks=${install.tun2socks?.displayPath ?: "missing"}.")
+        val gojni = install.gojni ?: return fail(Status.MissingGoJni, "Missing libgojni.so gomobile V2Ray runtime for ${EXPECTED_ABIS.joinToString()}.")
         val tun2socks = install.tun2socks ?: return fail(Status.MissingTun2Socks, "Missing libtun2socks.so for ${EXPECTED_ABIS.joinToString()}.")
-        val gojni = install.gojni ?: return fail(Status.MissingGoJni, "Missing libgojni.so for ${EXPECTED_ABIS.joinToString()}.")
         if (vpnInterface == null) {
             return fail(Status.Error, "Android VPN TUN interface was not established.")
         }
 
         status = Status.Starting
-        selectedCore = core
-        Log.i(TAG, "Prepared ${core.name} (${core.abi}) with ${tun2socks.name} and ${gojni.name}; config=${generated.absolutePath}.")
+        selectedRuntime = gojni
+        Log.i(TAG, "Prepared ${gojni.name} (${gojni.abi}) with ${tun2socks.name}; config=${generated.absolutePath}.")
 
         if (!NativeRuntimeAdapter.isStartAvailable()) {
             return fail(
@@ -149,7 +136,7 @@ class CoreBridge(private val context: Context) {
             )
         }
 
-        return NativeRuntimeAdapter.start(context, core, tun2socks, generated, vpnInterface, protectSocket)
+        return NativeRuntimeAdapter.start(context, gojni, tun2socks, generated, vpnInterface, protectSocket)
             .onSuccess {
                 status = Status.Running
                 lastError = null
@@ -162,16 +149,16 @@ class CoreBridge(private val context: Context) {
                 lastError = failure.message
                 Log.e(TAG_V2RAY, "V2Ray start result: failed: $lastError", error)
                 Log.e(TAG_TUN2SOCKS, "tun2socks start result: failed or released after V2Ray failure: $lastError", error)
-                NativeRuntimeAdapter.stop(selectedCore)
+                NativeRuntimeAdapter.stop(selectedRuntime)
             }
     }
 
     fun stop() {
         if (status == Status.Starting || status == Status.Running || status == Status.Error) {
-            NativeRuntimeAdapter.stop(selectedCore)
-            Log.i(TAG, "Stopped native core bridge state.")
+            NativeRuntimeAdapter.stop(selectedRuntime)
+            Log.i(TAG, "Stopped native runtime bridge state.")
         }
-        selectedCore = null
+        selectedRuntime = null
         status = Status.Stopped
         lastError = null
     }
@@ -203,15 +190,14 @@ class CoreBridge(private val context: Context) {
      * for the exact jniLibs locations this bridge expects before packaging.
      */
     private fun expectedSourceLibraries(): Map<Pair<String, String>, String> = EXPECTED_ABIS.flatMap { abi ->
-        (CORE_LIBRARY_NAMES + TUN2SOCKS_LIBRARY + GOJNI_LIBRARY).map { name ->
+        listOf(TUN2SOCKS_LIBRARY, GOJNI_LIBRARY).map { name ->
             (abi to name) to "app/src/main/jniLibs/$abi/$name"
         }
     }.toMap()
 
     enum class Status(val label: String) {
-        MissingCore("Missing Xray/V2Ray core"),
         MissingTun2Socks("Missing tun2socks"),
-        MissingGoJni("Missing gojni"),
+        MissingGoJni("Missing V2Ray runtime"),
         StartApiNotWired("Native runtime unavailable"),
         Ready("Ready"),
         Starting("Starting"),
@@ -231,7 +217,6 @@ class CoreBridge(private val context: Context) {
     }
 
     data class NativeCoreInstall(
-        val core: NativeLibrary?,
         val tun2socks: NativeLibrary?,
         val gojni: NativeLibrary?,
         val discovered: List<NativeLibrary>
@@ -267,20 +252,20 @@ class CoreBridge(private val context: Context) {
 
         fun start(
             context: Context,
-            core: NativeLibrary,
+            runtime: NativeLibrary,
             tun2socks: NativeLibrary,
             configFile: File,
             vpnInterface: ParcelFileDescriptor,
             protectSocket: (Int) -> Boolean
         ): Result<Unit> = try {
-            stop(core)
+            stop(runtime)
             Seq.touch()
             Seq.setContext(context.applicationContext)
             Libv2ray.touch()
             Libv2ray.initV2Env(context.filesDir.absolutePath)
 
             val configContent = configFile.readText()
-            Log.i(TAG_CONFIG, "Testing generated Xray config before core start: ${configFile.absolutePath}.")
+            Log.i(TAG_CONFIG, "Testing generated Xray config before runtime start: ${configFile.absolutePath}.")
             Libv2ray.testConfig(configContent)
             Log.i(TAG_CONFIG, "Generated Xray config passed libv2ray validation.")
 
@@ -335,29 +320,29 @@ class CoreBridge(private val context: Context) {
             val tunFd = vpnInterface.detachFd()
             detachedTunFd = tunFd
             tun2socksProcess = startTun2Socks(tun2socks, tunFd)
-            Log.i(TAG_V2RAY, "V2Ray start result: runLoop launched for ${core.name}.")
+            Log.i(TAG_V2RAY, "V2Ray start result: runLoop launched for ${runtime.name}.")
             Log.i(TAG_TUN2SOCKS, "tun2socks start result: process launched for ${tun2socks.name} with tun fd $tunFd.")
             Result.success(Unit)
         } catch (error: UnsatisfiedLinkError) {
-            stop(core)
+            stop(runtime)
             Result.failure(IllegalStateException("Start failed: native library could not be loaded: ${error.message}", error))
         } catch (error: NoClassDefFoundError) {
-            stop(core)
+            stop(runtime)
             Result.failure(IllegalStateException("Start failed: native runtime class is missing: ${error.message}", error))
         } catch (error: IllegalStateException) {
-            stop(core)
+            stop(runtime)
             Result.failure(IllegalStateException("Start failed: ${error.message ?: "illegal native runtime state"}", error))
         } catch (error: IOException) {
-            stop(core)
+            stop(runtime)
             Result.failure(IllegalStateException("Start failed: I/O error while starting native runtime: ${error.message}", error))
         } catch (error: Throwable) {
-            stop(core)
+            stop(runtime)
             Result.failure(IllegalStateException("Start failed: ${error.message ?: error::class.java.simpleName}", error))
         }
 
-        fun stop(core: NativeLibrary?) {
+        fun stop(runtime: NativeLibrary?) {
             runCatching { v2rayPoint?.stopLoop() }
-                .onFailure { Log.w(TAG, "Failed to stop libv2ray point for ${core?.name.orEmpty()}.", it) }
+                .onFailure { Log.w(TAG, "Failed to stop libv2ray point for ${runtime?.name.orEmpty()}.", it) }
             v2rayPoint = null
             v2rayThread?.interrupt()
             v2rayThread = null
@@ -415,7 +400,6 @@ class CoreBridge(private val context: Context) {
         private const val TAG_TUN2SOCKS = "Tun2SocksStart"
         private const val GENERATED_CONFIG_FILE = "xray-generated-config.json"
         private val EXPECTED_ABIS = listOf("arm64-v8a", "armeabi-v7a")
-        private val CORE_LIBRARY_NAMES = listOf("libxray.so", "libv2ray.so")
         private const val TUN2SOCKS_LIBRARY = "libtun2socks.so"
         private const val GOJNI_LIBRARY = "libgojni.so"
         private const val START_API_NOT_WIRED_MESSAGE =

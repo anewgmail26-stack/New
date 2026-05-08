@@ -1,6 +1,6 @@
 # My Tunnel Lite Android VPN
 
-My Tunnel Lite is a Kotlin Android VLESS/V2Ray VPN client. The app now packages the native Xray/libv2ray runtime (`libgojni.so`/`libxray.so`) and `libtun2socks.so`, generates an Xray-compatible VLESS configuration from the selected server, starts libv2ray through Java/Kotlin gomobile bindings, creates an Android `VpnService` TUN interface, and routes that TUN traffic to the local SOCKS inbound with tun2socks.
+My Tunnel Lite is a Kotlin Android VLESS/V2Ray VPN client. The app packages the gomobile V2Ray runtime (`libgojni.so`) and `libtun2socks.so`, generates an Xray-compatible VLESS configuration from the selected server, starts libv2ray through Java/Kotlin gomobile bindings, creates an Android `VpnService` TUN interface, and routes that TUN traffic to the local SOCKS inbound with tun2socks. Standalone `libxray.so`/`libv2ray.so` files are intentionally removed and are not required by the app runtime.
 
 ## Update your server
 
@@ -23,8 +23,8 @@ After you update `servers.json`, build and install the app. The server selector 
 
 1. The UI saves the selected VLESS server/payload/DNS preference.
 2. `TunnelProfile.toXrayJson()` writes `xray-generated-config.json` in app-private storage with a SOCKS inbound at `127.0.0.1:10808`.
-3. `CoreBridge` loads the gomobile `libgojni` binding, initializes libv2ray, validates the generated config, and starts `V2RayPoint.runLoop()`.
-4. `MyVpnService` creates an Android TUN interface and passes socket protection callbacks to the core.
+3. `CoreBridge` loads the gomobile `libgojni` runtime, initializes libv2ray, validates the generated config, and starts `V2RayPoint.runLoop()`.
+4. `MyVpnService` creates an Android TUN interface and passes socket protection callbacks to the runtime.
 5. `CoreBridge` starts `libtun2socks.so` with the VPN file descriptor and forwards traffic to the local SOCKS inbound.
 
 ## Build APK locally
@@ -40,7 +40,8 @@ If your shell defaults to another JDK, set `JAVA_HOME` to JDK 17 first.
 
 ## Notes
 
-- This project currently includes arm64 native libraries in `app/src/main/jniLibs/arm64-v8a/`. Add matching libraries under `armeabi-v7a` if you need 32-bit devices.
+- This project currently includes arm64 native libraries in `app/src/main/jniLibs/arm64-v8a/`: `libgojni.so` for the V2Ray runtime and `libtun2socks.so` for TUN routing. Add matching libraries under `armeabi-v7a` if you need 32-bit devices.
+- Do not add stale standalone `libxray.so`/`libv2ray.so` files unless the Java/Kotlin gomobile binding is rebuilt to use them; the app detects only `libgojni.so` plus `libtun2socks.so`.
 - The native libraries are extracted at install time so `libtun2socks.so` can be executed by the app process.
 - Production deployments should use real server values, secure distribution, logging/crash handling, and device testing across Android versions.
 
@@ -76,4 +77,4 @@ Useful logcat tags while debugging START are:
 - `V2RayStart` for libv2ray start results.
 - `Tun2SocksStart` for tun2socks start results.
 
-If one of these logs says a native library or runtime API is missing/incomplete, rebuild the APK with compatible `libgojni.so`, `libxray.so`/`libv2ray.so`, and `libtun2socks.so` for the device ABI, then test START again on a physical device or emulator.
+If one of these logs says a native library or runtime API is missing/incomplete, rebuild the APK with compatible `libgojni.so` and `libtun2socks.so` for the device ABI, then test START again on a physical device or emulator.
