@@ -37,6 +37,7 @@ class CoreBridge(private val context: Context) {
         return when {
             install.gojni == null -> Status.MissingGoJni
             install.tun2socks == null -> Status.MissingTun2Socks
+            !install.isValid -> Status.InvalidNativeRuntime
             else -> Status.Ready
         }
     }
@@ -81,7 +82,7 @@ class CoreBridge(private val context: Context) {
 
     fun areRequiredLibrariesInstalled(): Boolean {
         val install = detectNativeLibraries()
-        return install.tun2socks != null && install.gojni != null
+        return install.tun2socks != null && install.gojni != null && install.isValid
     }
 
     fun isNativeRuntimeStartAvailable(): Boolean = NativeRuntimeAdapter.isStartAvailable()
@@ -123,6 +124,9 @@ class CoreBridge(private val context: Context) {
         Log.i(TAG_NATIVE, "Native library detection: gojni=${install.gojni?.displayPath ?: "missing"}, tun2socks=${install.tun2socks?.displayPath ?: "missing"}.")
         val gojni = install.gojni ?: return fail(Status.MissingGoJni, "Missing libgojni.so gomobile V2Ray runtime for ${EXPECTED_ABIS.joinToString()}.")
         val tun2socks = install.tun2socks ?: return fail(Status.MissingTun2Socks, "Missing libtun2socks.so for ${EXPECTED_ABIS.joinToString()}.")
+        if (!install.isValid) {
+            return fail(Status.InvalidNativeRuntime, INVALID_NATIVE_RUNTIME_MESSAGE + ": ${install.invalidReasons.joinToString("; ")}")
+        }
         if (vpnInterface == null) {
             return fail(Status.Error, "Android VPN TUN interface was not established.")
         }
@@ -162,7 +166,6 @@ class CoreBridge(private val context: Context) {
         }
         selectedRuntime = null
         status = Status.Stopped
-        lastError = null
     }
 
     fun isRunning(): Boolean = status == Status.Running
@@ -201,6 +204,7 @@ class CoreBridge(private val context: Context) {
         MissingTun2Socks("Missing tun2socks"),
         MissingGoJni("Missing V2Ray runtime"),
         StartApiNotWired("Native runtime unavailable"),
+        InvalidNativeRuntime("Invalid native runtime"),
         Ready("Ready"),
         Starting("Starting"),
         Running("Running"),
@@ -215,14 +219,28 @@ class CoreBridge(private val context: Context) {
         val sourcePath: String?
     ) {
         val isInstalled: Boolean get() = installedFile?.isFile == true
+        val sizeBytes: Long get() = installedFile?.takeIf { it.isFile }?.length() ?: 0L
         val displayPath: String get() = installedFile?.absolutePath ?: sourcePath.orEmpty()
+
+        fun invalidReason(minBytes: Long): String? = when {
+            installedFile?.isFile != true -> "$name missing"
+            sizeBytes < minBytes -> "$name is too small ($sizeBytes bytes)"
+            !installedFile.canRead() -> "$name cannot be read"
+            else -> null
+        }
     }
 
     data class NativeCoreInstall(
         val tun2socks: NativeLibrary?,
         val gojni: NativeLibrary?,
         val discovered: List<NativeLibrary>
-    )
+    ) {
+        val invalidReasons: List<String> get() = listOfNotNull(
+            gojni?.invalidReason(GOJNI_MIN_BYTES),
+            tun2socks?.invalidReason(TUN2SOCKS_MIN_BYTES)
+        )
+        val isValid: Boolean get() = gojni != null && tun2socks != null && invalidReasons.isEmpty()
+    }
 
     private object NativeRuntimeAdapter {
         private var v2rayPoint: V2RayPoint? = null
@@ -233,6 +251,7 @@ class CoreBridge(private val context: Context) {
         fun isStartAvailable(): Boolean = try {
             Seq.touch()
             Libv2ray.touch()
+            Libv2ray.checkVersionX()
             Log.i(TAG_NATIVE, "Native runtime API detected: libgojni/libv2ray wrappers are loadable.")
             true
         } catch (error: UnsatisfiedLinkError) {
@@ -267,9 +286,13 @@ class CoreBridge(private val context: Context) {
             Libv2ray.initV2Env(context.filesDir.absolutePath)
 
             val configContent = configFile.readText()
-            Log.i(TAG_CONFIG, "Testing generated Xray config before runtime start: ${configFile.absolutePath}.")
-            Libv2ray.testConfig(configContent)
-            Log.i(TAG_CONFIG, "Generated Xray config passed libv2ray validation.")
+            Log.i(TAG_CONFIG, "${MyVpnService.STEP_XRAY_CONFIG_TEST}: Testing generated Xray config before runtime start: ${configFile.absolutePath}.")
+            try {
+                Libv2ray.testConfig(configContent)
+            } catch (error: Throwable) {
+                throw IllegalStateException("${MyVpnService.STEP_XRAY_CONFIG_TEST}: ${error.message ?: error::class.java.simpleName}", error)
+            }
+            Log.i(TAG_CONFIG, "${MyVpnService.STEP_XRAY_CONFIG_TEST}: Generated Xray config passed libv2ray validation.")
 
             val supportSet = object : V2RayVPNServiceSupportsSet {
                 override fun setup(conf: String): Long = 0L
@@ -282,7 +305,7 @@ class CoreBridge(private val context: Context) {
                 }
             }
 
-            Log.i(TAG_V2RAY, "Creating libv2ray point and starting runLoop thread.")
+            Log.i(TAG_V2RAY, "${MyVpnService.STEP_XRAY_CORE_START}: Creating libv2ray point and starting runLoop thread.")
             val point = Libv2ray.newV2RayPoint(supportSet, false)
             point.setConfigureFileContent(configContent)
             point.setDomainName("")
@@ -314,33 +337,37 @@ class CoreBridge(private val context: Context) {
 
             Thread.sleep(700L)
             runLoopFailure.get()?.let { throw IllegalStateException("V2Ray run loop failed before routing started: ${it.message ?: it::class.java.simpleName}", it) }
-            if (v2rayThread?.isAlive != true) {
-                throw IllegalStateException("V2Ray run loop exited before routing started.")
+            if (v2rayThread?.isAlive != true || point.getIsRunning() != true) {
+                throw IllegalStateException("${MyVpnService.STEP_XRAY_CORE_START}: V2Ray run loop exited or did not report running before routing started.")
             }
 
-            Log.i(TAG_TUN2SOCKS, "Detaching Android TUN file descriptor for tun2socks.")
+            Log.i(TAG_TUN2SOCKS, "${MyVpnService.STEP_TUN2SOCKS_START}: Detaching Android TUN file descriptor for tun2socks.")
             val tunFd = vpnInterface.detachFd()
             detachedTunFd = tunFd
             tun2socksProcess = startTun2Socks(tun2socks, tunFd)
             closeDetachedTunFd()
+            if (point.getIsRunning() != true || v2rayThread?.isAlive != true || tun2socksProcess?.isAlive != true) {
+                throw IllegalStateException("${MyVpnService.STEP_TUN2SOCKS_START}: Native runtime did not remain running after startup.")
+            }
             Log.i(TAG_V2RAY, "V2Ray start result: runLoop launched for ${runtime.name}.")
             Log.i(TAG_TUN2SOCKS, "tun2socks start result: process launched for ${tun2socks.name} with tun fd $tunFd.")
             Result.success(Unit)
         } catch (error: UnsatisfiedLinkError) {
             stop(runtime)
-            Result.failure(IllegalStateException("Start failed: native library could not be loaded: ${error.message}", error))
+            Result.failure(IllegalStateException("Start failed: ${MyVpnService.STEP_XRAY_CORE_START}: native library could not be loaded: ${error.message}", error))
         } catch (error: NoClassDefFoundError) {
             stop(runtime)
-            Result.failure(IllegalStateException("Start failed: native runtime class is missing: ${error.message}", error))
+            Result.failure(IllegalStateException("Start failed: ${MyVpnService.STEP_XRAY_CORE_START}: native runtime class is missing: ${error.message}", error))
         } catch (error: IllegalStateException) {
             stop(runtime)
-            Result.failure(IllegalStateException("Start failed: ${error.message ?: "illegal native runtime state"}", error))
+            val message = error.message ?: "illegal native runtime state"
+            Result.failure(IllegalStateException(if (message.contains("STEP_")) "Start failed: $message" else "Start failed: ${MyVpnService.STEP_XRAY_CORE_START}: $message", error))
         } catch (error: IOException) {
             stop(runtime)
-            Result.failure(IllegalStateException("Start failed: I/O error while starting native runtime: ${error.message}", error))
+            Result.failure(IllegalStateException("Start failed: ${MyVpnService.STEP_TUN2SOCKS_START}: I/O error while starting native runtime: ${error.message}", error))
         } catch (error: Throwable) {
             stop(runtime)
-            Result.failure(IllegalStateException("Start failed: ${error.message ?: error::class.java.simpleName}", error))
+            Result.failure(IllegalStateException("Start failed: ${MyVpnService.STEP_XRAY_CORE_START}: ${error.message ?: error::class.java.simpleName}", error))
         }
 
         fun stop(runtime: NativeLibrary?) {
@@ -375,7 +402,7 @@ class CoreBridge(private val context: Context) {
                 "--socks-server-addr", "127.0.0.1:10808",
                 "--udpgw-remote-server-addr", "127.0.0.1:7300"
             )
-            Log.i(TAG_TUN2SOCKS, "Starting tun2socks command: ${command.joinToString(" ")}.")
+            Log.i(TAG_TUN2SOCKS, "${MyVpnService.STEP_TUN2SOCKS_START}: Starting tun2socks command: ${command.joinToString(" ")}.")
             val earlyOutput = StringBuilder()
             val process = ProcessBuilder(command)
                 .redirectErrorStream(true)
@@ -395,7 +422,7 @@ class CoreBridge(private val context: Context) {
             }
             Thread.sleep(350L)
             if (!process.isAlive) {
-                throw IOException("tun2socks exited early with code ${process.exitValue()}: ${earlyOutput.toString().trim().ifBlank { "no output" }}")
+                throw IOException("${MyVpnService.STEP_TUN2SOCKS_START}: tun2socks exited early with code ${process.exitValue()}: ${earlyOutput.toString().trim().ifBlank { "no output" }}")
             }
             return process
         }
@@ -412,8 +439,10 @@ class CoreBridge(private val context: Context) {
         private val EXPECTED_ABIS = listOf("arm64-v8a")
         private const val TUN2SOCKS_LIBRARY = "libtun2socks.so"
         private const val GOJNI_LIBRARY = "libgojni.so"
-        private const val START_API_NOT_WIRED_MESSAGE =
-            "Native runtime could not load libgojni/libv2ray wrappers."
+        private const val START_API_NOT_WIRED_MESSAGE = "Native Xray/tun2socks runtime missing or invalid"
+        private const val INVALID_NATIVE_RUNTIME_MESSAGE = "Native Xray/tun2socks runtime missing or invalid"
+        private const val GOJNI_MIN_BYTES = 5L * 1024L * 1024L
+        private const val TUN2SOCKS_MIN_BYTES = 128L * 1024L
         private const val MAX_TUN2SOCKS_LOG_CHARS = 4_000
     }
 }

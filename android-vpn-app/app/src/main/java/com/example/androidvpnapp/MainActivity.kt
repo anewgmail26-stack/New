@@ -4,6 +4,8 @@ import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -45,12 +47,16 @@ class MainActivity : Activity() {
     private lateinit var startStopButton: Button
     private lateinit var serverNameText: TextView
     private lateinit var serverSubtitleText: TextView
+    private lateinit var diagnosticsText: TextView
+    private lateinit var persistentErrorText: TextView
 
     private val timerHandler = Handler(Looper.getMainLooper())
     private var connected = false
     private var connecting = false
     private var connectedAt = 0L
     private var servers = emptyList<TunnelServer>()
+    private var lastFailedStep: String = "None"
+    private var lastErrorMessage: String = "None"
     private val defaultPayloadTweak = SampleTunnelCatalog.defaultPayloadTweak
 
     private val vpnStatusReceiver = object : BroadcastReceiver() {
@@ -59,6 +65,7 @@ class MainActivity : Activity() {
             val state = intent.getStringExtra(MyVpnService.EXTRA_STATE)
             val message = intent.getStringExtra(MyVpnService.EXTRA_STATUS_MESSAGE).orEmpty()
             val failureReason = intent.getStringExtra(MyVpnService.EXTRA_FAILURE_REASON).orEmpty()
+            val failedStep = intent.getStringExtra(MyVpnService.EXTRA_FAILED_STEP).orEmpty()
             val isConnected = intent.getBooleanExtra(MyVpnService.EXTRA_CONNECTED, false)
             Log.i(TAG, "VPN status update: state=$state, connected=$isConnected, message=$message")
             timerHandler.removeCallbacks(connectionTimeoutRunnable)
@@ -66,7 +73,8 @@ class MainActivity : Activity() {
                 "Connecting" -> setConnectingState(scheduleTimeout = false)
                 "Connected" -> setConnectedState(true)
                 "Failed" -> {
-                    val reason = failureReason.ifBlank { message.ifBlank { "VPN connection failed." } }
+                    val reason = sanitizeError(failureReason.ifBlank { message.ifBlank { "VPN connection failed." } })
+                    rememberFailure(failedStep.ifBlank { "Unknown" }, reason)
                     setFailedState(reason)
                     showToast(reason)
                 }
@@ -90,7 +98,9 @@ class MainActivity : Activity() {
 
     private val connectionTimeoutRunnable = Runnable {
         if (connecting && !connected) {
-            setConnectedState(false, "Start failed: VPN service did not report a connection. Check native runtime logs.")
+            val message = "Start failed: VPN service did not report a connection. Check native runtime logs."
+            rememberFailure("Timeout", message)
+            setConnectedState(false, message)
         }
     }
 
@@ -156,6 +166,7 @@ class MainActivity : Activity() {
         root.addView(buildServerCard())
         root.addView(buildDnsRow())
         root.addView(buildStartStopButton())
+        root.addView(buildDiagnosticsSection())
         root.addView(buildBottomNav())
 
         setContentView(ScrollView(this).apply {
@@ -164,6 +175,7 @@ class MainActivity : Activity() {
         })
         refreshServerSpinner()
         updateGeneratedConfig()
+        updateDiagnostics()
     }
 
     private fun buildHeader(): View {
@@ -389,6 +401,33 @@ class MainActivity : Activity() {
         }, LinearLayout.LayoutParams(dp(166), dp(166)))
     }
 
+    private fun buildDiagnosticsSection(): View = card().apply {
+        addView(TextView(this@MainActivity).apply {
+            text = "Diagnostics"
+            textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(DARK)
+        })
+        persistentErrorText = TextView(this@MainActivity).apply {
+            text = "Last failure: None"
+            textSize = 13f
+            setTextColor(RED)
+            setPadding(0, dp(6), 0, dp(6))
+        }
+        diagnosticsText = TextView(this@MainActivity).apply {
+            textSize = 12f
+            setTextColor(GRAY)
+            setTextIsSelectable(true)
+        }
+        addView(persistentErrorText)
+        addView(diagnosticsText)
+        addView(Button(this@MainActivity).apply {
+            text = "Copy Debug Logs"
+            setTextColor(GREEN)
+            setOnClickListener { copyDebugLogs() }
+        })
+    }
+
     private fun buildBottomNav(): View = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER
@@ -415,6 +454,7 @@ class MainActivity : Activity() {
     private fun showToolsDialog() {
         val coreManager = TunnelCoreManager(applicationContext)
         val coreStatus = coreManager.getStatusLabel(configStore.loadSelectedProfile())
+        updateDiagnostics()
         val installText = if (coreManager.areNativeRuntimeFilesInstalled()) {
             "V2Ray runtime, tun2socks, and the gojni wrapper are present. The app can start libv2ray and route the Android TUN interface through tun2socks.\n${coreManager.describeNativeCoreInstall()}"
         } else {
@@ -538,6 +578,7 @@ class MainActivity : Activity() {
         durationText.text = "VPN Duration : 00:00:00"
         uploadText.text = "⬆\nUpload\n0 B"
         downloadText.text = "⬇\nDownload\n0 B"
+        updateDiagnostics()
     }
 
     private fun setStoppingState() {
@@ -570,6 +611,7 @@ class MainActivity : Activity() {
             durationText.text = "VPN Duration : 00:00:00"
             uploadText.text = "⬆\nUpload\n0 B"
             downloadText.text = "⬇\nDownload\n0 B"
+            updateDiagnostics()
         }
     }
 
@@ -608,9 +650,50 @@ class MainActivity : Activity() {
     private fun handleStartServiceFailure(reason: String, error: Throwable) {
         val message = if (reason.startsWith("Start failed:")) reason else "Start failed: $reason"
         Log.e(TAG, message, error)
+        rememberFailure("StartService", message)
         setConnectedState(false, message)
         showToast(message)
     }
+
+    private fun rememberFailure(step: String, message: String) {
+        lastFailedStep = step.ifBlank { "Unknown" }
+        lastErrorMessage = sanitizeError(message).ifBlank { "Unknown error" }
+        updateDiagnostics()
+    }
+
+    private fun updateDiagnostics() {
+        if (!::diagnosticsText.isInitialized || !::persistentErrorText.isInitialized) return
+        val nativeDir = applicationInfo.nativeLibraryDir.orEmpty()
+        val gojniFile = java.io.File(nativeDir, "libgojni.so")
+        val tun2socksFile = java.io.File(nativeDir, "libtun2socks.so")
+        persistentErrorText.text = "Last failed step: $lastFailedStep\nLast error: $lastErrorMessage"
+        diagnosticsText.text = listOf(
+            "Device supported ABIs: ${Build.SUPPORTED_ABIS.joinToString()}",
+            "App nativeLibraryDir: $nativeDir",
+            "libgojni.so exists: ${gojniFile.isFile}; size: ${if (gojniFile.isFile) gojniFile.length() else 0} bytes",
+            "libtun2socks.so exists: ${tun2socksFile.isFile}; size: ${if (tun2socksFile.isFile) tun2socksFile.length() else 0} bytes",
+            "Last failed step: $lastFailedStep",
+            "Last error message: $lastErrorMessage"
+        ).joinToString("\n")
+    }
+
+    private fun copyDebugLogs() {
+        val logs = runCatching {
+            Runtime.getRuntime().exec(arrayOf(
+                "logcat", "-d", "-t", "400",
+                "MyVpnService:D", "CoreBridge:D", "XrayConfig:D", "V2RayStart:D", "Tun2SocksStart:D", "*:S"
+            )).inputStream.bufferedReader().use { it.readText() }
+        }.getOrElse { error -> "Could not read logcat: ${sanitizeError(error.message ?: error::class.java.simpleName)}" }
+        val debugText = diagnosticsText.text.toString() + "\n\n" + logs
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("VPN debug logs", debugText))
+        showToast("Debug logs copied.")
+    }
+
+    private fun sanitizeError(message: String): String = message
+        .replace(Regex("[\r\n\t]+"), " ")
+        .replace(Regex("\\s{2,}"), " ")
+        .take(MAX_ERROR_CHARS)
 
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -675,6 +758,7 @@ class MainActivity : Activity() {
         private const val REQUEST_VPN_PERMISSION = 100
         private const val REQUEST_NOTIFICATIONS = 101
         private const val CONNECTION_TIMEOUT_MS = 15_000L
+        private const val MAX_ERROR_CHARS = 900
         private const val TAG = "MainActivity"
         private val GREEN = Color.rgb(0, 155, 64)
         private val GREEN_DARK = Color.rgb(0, 120, 52)

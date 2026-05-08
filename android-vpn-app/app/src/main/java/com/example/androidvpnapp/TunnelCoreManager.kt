@@ -25,7 +25,10 @@ class TunnelCoreManager(private val context: Context) {
         val install = coreBridge.detectNativeLibraries()
         val gojni = install.gojni?.displayPath ?: "Missing libgojni.so"
         val tun2socks = install.tun2socks?.displayPath ?: "Missing libtun2socks.so"
-        return "V2Ray runtime: $gojni\nTUN routing: $tun2socks"
+        val gojniSize = install.gojni?.sizeBytes ?: 0L
+        val tun2socksSize = install.tun2socks?.sizeBytes ?: 0L
+        val validity = if (install.isValid) "valid" else "invalid: ${install.invalidReasons.joinToString("; ").ifBlank { "unknown" }}"
+        return "V2Ray runtime: $gojni ($gojniSize bytes)\nTUN routing: $tun2socks ($tun2socksSize bytes)\nNative runtime: $validity"
     }
 
     fun generateAndSaveConfig(profile: TunnelProfile?): Result<File> = coreBridge.generateAndSaveConfig(profile)
@@ -38,6 +41,7 @@ class TunnelCoreManager(private val context: Context) {
         val preflightStatus = getStatus(profile)
         if (preflightStatus == CoreStatus.TUN2SOCKS_NOT_INSTALLED ||
             preflightStatus == CoreStatus.GOJNI_NOT_INSTALLED ||
+            preflightStatus == CoreStatus.INVALID_NATIVE_RUNTIME ||
             preflightStatus == CoreStatus.START_API_NOT_WIRED
         ) {
             return Result.failure(IllegalStateException(preflightStatus.label))
@@ -58,6 +62,7 @@ class TunnelCoreManager(private val context: Context) {
         CoreBridge.Status.MissingTun2Socks -> CoreStatus.TUN2SOCKS_NOT_INSTALLED
         CoreBridge.Status.MissingGoJni -> CoreStatus.GOJNI_NOT_INSTALLED
         CoreBridge.Status.StartApiNotWired -> CoreStatus.START_API_NOT_WIRED
+        CoreBridge.Status.InvalidNativeRuntime -> CoreStatus.INVALID_NATIVE_RUNTIME
         CoreBridge.Status.Ready -> CoreStatus.READY
         CoreBridge.Status.Starting -> CoreStatus.CONNECTING
         CoreBridge.Status.Running -> CoreStatus.CONNECTED
@@ -70,6 +75,7 @@ class TunnelCoreManager(private val context: Context) {
         GOJNI_NOT_INSTALLED("Missing V2Ray runtime"),
         CONFIG_MISSING("Config missing"),
         START_API_NOT_WIRED("Native runtime unavailable"),
+        INVALID_NATIVE_RUNTIME("Native Xray/tun2socks runtime missing or invalid"),
         READY("Ready"),
         CONNECTING("Starting"),
         CONNECTED("Running"),
