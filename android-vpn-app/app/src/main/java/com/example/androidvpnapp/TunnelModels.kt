@@ -132,7 +132,7 @@ data class TunnelProfile(
             )
             .put("streamSettings", streamSettings)
 
-        return JSONObject()
+        val config = JSONObject()
             .put("log", JSONObject().put("loglevel", "warning"))
             .put(
                 "dns",
@@ -166,10 +166,41 @@ data class TunnelProfile(
                     .put("mode", "v2ray")
                     .put("dnsEnabled", dnsEnabled)
             )
-            .toString(2)
+
+        validateXrayJson(config)
+        return config.toString(2)
     }
 
     fun toInternalJson(): String = toXrayJson()
+
+    companion object {
+        fun validateXrayJson(configJson: String): Result<Unit> = runCatching {
+            validateXrayJson(JSONObject(configJson))
+        }
+
+        private fun validateXrayJson(config: JSONObject) {
+            val inbound = config.getJSONArray("inbounds").getJSONObject(0)
+            require(inbound.getString("protocol") == "socks") { "Generated Xray inbound must be SOCKS." }
+            require(inbound.getString("listen") == "127.0.0.1") { "Generated Xray SOCKS inbound must listen on 127.0.0.1." }
+            require(inbound.getInt("port") == 10808) { "Generated Xray SOCKS inbound must listen on port 10808." }
+
+            val outbound = config.getJSONArray("outbounds").getJSONObject(0)
+            require(outbound.getString("protocol") == "vless") { "Generated Xray outbound must use VLESS." }
+            val vnext = outbound.getJSONObject("settings").getJSONArray("vnext").getJSONObject(0)
+            require(vnext.getString("address") == "shar1.knlvpn.com") { "Generated VLESS address must be shar1.knlvpn.com." }
+            require(vnext.getInt("port") == 80) { "Generated VLESS port must be 80." }
+            val user = vnext.getJSONArray("users").getJSONObject(0)
+            require(user.getString("id") == "48990253-ed95-4aac-9ad3-ad4457e50b14") { "Generated VLESS UUID does not match the selected server." }
+            require(user.getString("encryption") == "none") { "Generated VLESS encryption must be none." }
+
+            val stream = outbound.getJSONObject("streamSettings")
+            require(stream.getString("network") == "ws") { "Generated VLESS network must be ws." }
+            require(stream.getString("security") == "none") { "Generated VLESS security must be none." }
+            val ws = stream.getJSONObject("wsSettings")
+            require(ws.getString("path") == "/") { "Generated VLESS WS path must be /." }
+            require(ws.getJSONObject("headers").getString("Host") == "telegram.org") { "Generated VLESS WS Host header must be telegram.org." }
+        }
+    }
 }
 
 object SampleTunnelCatalog {

@@ -103,9 +103,11 @@ class CoreBridge(private val context: Context) {
 
         return runCatching {
             configFile.parentFile?.mkdirs()
-            configFile.writeText(profile.toXrayJson())
-            Log.i(TAG_CONFIG, "Generated Xray config for server=${profile.server.id} (${profile.server.host}:${profile.server.port}) at ${configFile.absolutePath}.")
-            Log.i(TAG_CONFIG, "VLESS/WS/TLS config parsed: network=${profile.server.type}, security=${profile.server.security}, sni=${profile.server.sni}, path=${profile.server.wsPath}, allowInsecure=${profile.server.allowInsecure}.")
+            val configJson = profile.toXrayJson()
+            TunnelProfile.validateXrayJson(configJson).getOrThrow()
+            configFile.writeText(configJson)
+            Log.i(TAG_CONFIG, "Generated and verified Xray config for server=${profile.server.id} (${profile.server.host}:${profile.server.port}) at ${configFile.absolutePath}.")
+            Log.i(TAG_CONFIG, "VLESS/WS config parsed: network=${profile.server.type}, security=${profile.server.security}, path=${profile.server.wsPath}, hostHeader=${profile.server.hostHeader.ifBlank { profile.server.host }}.")
             configFile
         }.onFailure { error ->
             status = Status.Error
@@ -320,6 +322,7 @@ class CoreBridge(private val context: Context) {
             val tunFd = vpnInterface.detachFd()
             detachedTunFd = tunFd
             tun2socksProcess = startTun2Socks(tun2socks, tunFd)
+            closeDetachedTunFd()
             Log.i(TAG_V2RAY, "V2Ray start result: runLoop launched for ${runtime.name}.")
             Log.i(TAG_TUN2SOCKS, "tun2socks start result: process launched for ${tun2socks.name} with tun fd $tunFd.")
             Result.success(Unit)
@@ -348,6 +351,13 @@ class CoreBridge(private val context: Context) {
             v2rayThread = null
             tun2socksProcess?.destroy()
             tun2socksProcess = null
+            closeDetachedTunFd()
+        }
+
+        private fun closeDetachedTunFd() {
+            val fd = detachedTunFd ?: return
+            runCatching { ParcelFileDescriptor.adoptFd(fd).close() }
+                .onFailure { Log.w(TAG_TUN2SOCKS, "Failed to close detached TUN fd $fd in parent process.", it) }
             detachedTunFd = null
         }
 
@@ -399,7 +409,7 @@ class CoreBridge(private val context: Context) {
         private const val TAG_V2RAY = "V2RayStart"
         private const val TAG_TUN2SOCKS = "Tun2SocksStart"
         private const val GENERATED_CONFIG_FILE = "xray-generated-config.json"
-        private val EXPECTED_ABIS = listOf("arm64-v8a", "armeabi-v7a")
+        private val EXPECTED_ABIS = listOf("arm64-v8a")
         private const val TUN2SOCKS_LIBRARY = "libtun2socks.so"
         private const val GOJNI_LIBRARY = "libgojni.so"
         private const val START_API_NOT_WIRED_MESSAGE =

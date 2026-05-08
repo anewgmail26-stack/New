@@ -13,6 +13,27 @@ android {
         targetSdk 35
         versionCode 1
         versionName '1.0'
+
+        ndk {
+            // Only arm64-v8a native libraries are currently present under app/src/main/jniLibs.
+            // TODO: Add armeabi-v7a binaries before enabling 32-bit ARM builds.
+            // TODO: Add x86 and x86_64 binaries before enabling emulator/Intel builds.
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    sourceSets {
+        main {
+            // Packages app/src/main/jniLibs/arm64-v8a/libgojni.so and
+            // app/src/main/jniLibs/arm64-v8a/libtun2socks.so into the APK.
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 
     compileOptions {
