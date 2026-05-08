@@ -70,7 +70,12 @@ class MyVpnService : VpnService() {
             }
         }
 
-        startForegroundSafely(ServiceState.Connecting)
+        try {
+            startForegroundSafely(ServiceState.Connecting)
+        } catch (error: Throwable) {
+            failConnect(STEP_FOREGROUND_NOTIFICATION, sanitizeError(error.message ?: error::class.java.simpleName), error)
+            return
+        }
         setState(ServiceState.Connecting)
         connectThread = Thread({ connectInBackground() }, "vpn-connect").apply { start() }
     }
@@ -111,7 +116,7 @@ class MyVpnService : VpnService() {
             Log.i(TAG, "VPN connect flow started; selectedProfilePresent=${profile != null}.")
 
             if (profile == null) {
-                failConnect(TunnelCoreManager.CoreStatus.CONFIG_MISSING.label, null)
+                failConnect(STEP_XRAY_CONFIG_GENERATE, TunnelCoreManager.CoreStatus.CONFIG_MISSING.label, null)
                 return
             }
 
@@ -120,28 +125,39 @@ class MyVpnService : VpnService() {
                 "Config parsed: id=${profile.server.id}, protocol=vless, host=${profile.server.host}, port=${profile.server.port}, network=${profile.server.type}, security=${profile.server.security}, wsPath=${profile.server.wsPath}, wsHost=${profile.server.hostHeader.ifBlank { profile.server.host }}."
             )
 
-            ensureTunInterface(configStore)
+            runStep(STEP_TUN_ESTABLISH) { ensureTunInterface(configStore) }.getOrElse { error ->
+                failConnect(STEP_TUN_ESTABLISH, error.message ?: "Android VPN TUN interface failed", error)
+                return
+            }
+
+            runStep(STEP_XRAY_CONFIG_GENERATE) { tunnelCoreManager.generateAndSaveConfig(profile).getOrThrow() }.getOrElse { error ->
+                failConnect(STEP_XRAY_CONFIG_GENERATE, error.message ?: "Xray config generation failed", error)
+                return
+            }
 
             val coreStatus = tunnelCoreManager.getStatus(profile)
             Log.i(TAG, "Native runtime preflight status: $coreStatus.")
             if (coreStatus == TunnelCoreManager.CoreStatus.TUN2SOCKS_NOT_INSTALLED ||
                 coreStatus == TunnelCoreManager.CoreStatus.GOJNI_NOT_INSTALLED ||
+                coreStatus == TunnelCoreManager.CoreStatus.INVALID_NATIVE_RUNTIME ||
                 coreStatus == TunnelCoreManager.CoreStatus.START_API_NOT_WIRED
             ) {
-                failConnect(coreStatus.label, null)
+                failConnect(STEP_XRAY_CORE_START, coreStatus.label, null)
                 return
             }
 
             val tun = vpnInterface
             if (tun == null) {
-                failConnect("Android VPN TUN interface was not established.", null)
+                failConnect(STEP_TUN_ESTABLISH, "Android VPN TUN interface was not established.", null)
                 return
             }
 
             Log.i(TAG, "Starting libv2ray and tun2socks for Android TUN -> SOCKS 127.0.0.1:10808 -> VLESS outbound forwarding.")
             val result = tunnelCoreManager.start(profile, tun) { socket -> protect(socket) }
             if (result.isFailure) {
-                failConnect(result.exceptionOrNull()?.message ?: "native runtime did not start", result.exceptionOrNull())
+                val failure = result.exceptionOrNull()
+                val step = failureStep(failure)
+                failConnect(step, failure?.message ?: "native runtime did not start", failure)
                 return
             }
 
@@ -158,15 +174,33 @@ class MyVpnService : VpnService() {
             startForegroundSafely(ServiceState.Connected)
             setState(ServiceState.Connected)
         } catch (error: UnsatisfiedLinkError) {
-            failConnect("native library could not be loaded: ${error.message}", error)
+            failConnect(STEP_XRAY_CORE_START, "native library could not be loaded: ${error.message}", error)
         } catch (error: NoClassDefFoundError) {
-            failConnect("native runtime class is missing: ${error.message}", error)
+            failConnect(STEP_XRAY_CORE_START, "native runtime class is missing: ${error.message}", error)
         } catch (error: IllegalStateException) {
-            failConnect(error.message ?: "illegal VPN service state", error)
+            failConnect(STEP_XRAY_CORE_START, error.message ?: "illegal VPN service state", error)
         } catch (error: IOException) {
-            failConnect("I/O error while starting VPN: ${error.message}", error)
+            failConnect(STEP_TUN2SOCKS_START, "I/O error while starting VPN: ${error.message}", error)
         } catch (error: Throwable) {
-            failConnect(error.message ?: error::class.java.simpleName, error)
+            failConnect(STEP_XRAY_CORE_START, error.message ?: error::class.java.simpleName, error)
+        }
+    }
+
+    private fun <T> runStep(step: String, block: () -> T): Result<T> {
+        Log.i(TAG, "Starting connect step $step.")
+        return runCatching(block)
+            .onSuccess { Log.i(TAG, "Completed connect step $step.") }
+            .onFailure { Log.e(TAG, "Failed connect step $step: ${sanitizeError(it.message ?: it::class.java.simpleName)}", it) }
+    }
+
+    private fun failureStep(error: Throwable?): String {
+        val message = error?.message.orEmpty()
+        return when {
+            message.contains(STEP_XRAY_CONFIG_TEST) -> STEP_XRAY_CONFIG_TEST
+            message.contains(STEP_TUN2SOCKS_START) || message.contains("tun2socks", ignoreCase = true) -> STEP_TUN2SOCKS_START
+            message.contains(STEP_XRAY_CORE_START) || message.contains("V2Ray", ignoreCase = true) || message.contains("native", ignoreCase = true) -> STEP_XRAY_CORE_START
+            message.contains(STEP_XRAY_CONFIG_GENERATE) || message.contains("config", ignoreCase = true) -> STEP_XRAY_CONFIG_GENERATE
+            else -> STEP_XRAY_CORE_START
         }
     }
 
@@ -194,17 +228,18 @@ class MyVpnService : VpnService() {
         Log.i(TAG, "TUN interface established with $VPN_ADDRESS/$VPN_PREFIX_LENGTH, default IPv4 route, and MTU $VPN_MTU.")
     }
 
-    private fun failConnect(reason: String, error: Throwable?) {
-        val message = if (reason.startsWith("Start failed:")) reason else "Start failed: $reason"
+    private fun failConnect(step: String, reason: String, error: Throwable?) {
+        val sanitizedReason = sanitizeError(reason)
+        val message = if (sanitizedReason.startsWith("Start failed:")) sanitizedReason else "Start failed: $sanitizedReason"
         if (error == null) {
-            Log.e(TAG, message)
+            Log.e(TAG, "Failed($step): $message")
         } else {
-            Log.e(TAG, message, error)
+            Log.e(TAG, "Failed($step): $message", error)
         }
         stopTunnelAndTun()
         stopForegroundSafely()
         showToast(message)
-        setState(ServiceState.Failed, message)
+        setState(ServiceState.Failed, message, step)
         stopSelf()
     }
 
@@ -252,23 +287,30 @@ class MyVpnService : VpnService() {
         }
     }
 
-    private fun setState(state: ServiceState, failureReason: String? = null) {
+    private fun setState(state: ServiceState, failureReason: String? = null, failedStep: String? = null) {
         synchronized(stateLock) {
             serviceState = state
-            broadcastStateLocked(state, failureReason)
+            broadcastStateLocked(state, failureReason, failedStep)
         }
     }
 
-    private fun broadcastStateLocked(state: ServiceState, failureReason: String? = null) {
+    private fun broadcastStateLocked(state: ServiceState, failureReason: String? = null, failedStep: String? = null) {
+        val sanitizedReason = failureReason?.let { sanitizeError(it) }
         sendBroadcast(
             Intent(ACTION_STATUS)
                 .setPackage(packageName)
                 .putExtra(EXTRA_STATE, state.wireName)
-                .putExtra(EXTRA_STATUS_MESSAGE, failureReason ?: state.wireName)
-                .putExtra(EXTRA_FAILURE_REASON, failureReason.orEmpty())
+                .putExtra(EXTRA_STATUS_MESSAGE, sanitizedReason ?: state.wireName)
+                .putExtra(EXTRA_FAILURE_REASON, sanitizedReason.orEmpty())
+                .putExtra(EXTRA_FAILED_STEP, failedStep.orEmpty())
                 .putExtra(EXTRA_CONNECTED, state == ServiceState.Connected)
         )
     }
+
+    private fun sanitizeError(message: String): String = message
+        .replace(Regex("[\r\n\t]+"), " ")
+        .replace(Regex("\\s{2,}"), " ")
+        .take(MAX_ERROR_CHARS)
 
     private fun showToast(message: String) {
         Handler(Looper.getMainLooper()).post {
@@ -329,6 +371,13 @@ class MyVpnService : VpnService() {
         const val EXTRA_CONNECTED = "connected"
         const val EXTRA_STATE = "state"
         const val EXTRA_FAILURE_REASON = "failure_reason"
+        const val EXTRA_FAILED_STEP = "failed_step"
+        const val STEP_FOREGROUND_NOTIFICATION = "STEP_FOREGROUND_NOTIFICATION"
+        const val STEP_TUN_ESTABLISH = "STEP_TUN_ESTABLISH"
+        const val STEP_XRAY_CONFIG_GENERATE = "STEP_XRAY_CONFIG_GENERATE"
+        const val STEP_XRAY_CONFIG_TEST = "STEP_XRAY_CONFIG_TEST"
+        const val STEP_XRAY_CORE_START = "STEP_XRAY_CORE_START"
+        const val STEP_TUN2SOCKS_START = "STEP_TUN2SOCKS_START"
         private const val CHANNEL_ID = "vpn_connection"
         private const val NOTIFICATION_ID = 1001
         private const val VPN_ADDRESS = "10.10.0.2"
@@ -336,5 +385,6 @@ class MyVpnService : VpnService() {
         private const val VPN_MTU = 1500
         private const val TAG = "MyVpnService"
         private const val TAG_PROFILE = "VpnProfile"
+        private const val MAX_ERROR_CHARS = 900
     }
 }
