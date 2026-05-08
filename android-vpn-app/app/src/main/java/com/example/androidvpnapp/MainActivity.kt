@@ -56,23 +56,25 @@ class MainActivity : Activity() {
     private val vpnStatusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != MyVpnService.ACTION_STATUS) return
+            val state = intent.getStringExtra(MyVpnService.EXTRA_STATE)
             val message = intent.getStringExtra(MyVpnService.EXTRA_STATUS_MESSAGE).orEmpty()
+            val failureReason = intent.getStringExtra(MyVpnService.EXTRA_FAILURE_REASON).orEmpty()
             val isConnected = intent.getBooleanExtra(MyVpnService.EXTRA_CONNECTED, false)
-            Log.i(TAG, "VPN status update: connected=$isConnected, message=$message")
-            if (isConnected) {
-                timerHandler.removeCallbacks(connectionTimeoutRunnable)
-                if (message.startsWith("Start failed:")) {
-                    setActiveErrorState(message)
-                    showToast(message)
-                } else if (message == "Connecting") {
-                    setConnectingState(scheduleTimeout = false)
-                } else {
-                    setConnectedState(true)
+            Log.i(TAG, "VPN status update: state=$state, connected=$isConnected, message=$message")
+            timerHandler.removeCallbacks(connectionTimeoutRunnable)
+            when (state ?: message) {
+                "Connecting" -> setConnectingState(scheduleTimeout = false)
+                "Connected" -> setConnectedState(true)
+                "Failed" -> {
+                    val reason = failureReason.ifBlank { message.ifBlank { "VPN connection failed." } }
+                    setFailedState(reason)
+                    showToast(reason)
                 }
-            } else {
-                timerHandler.removeCallbacks(connectionTimeoutRunnable)
-                setConnectedState(false, message.ifBlank { "Disconnected" })
-                if (message.startsWith("Start failed:")) showToast(message)
+                "Stopping" -> setStoppingState()
+                "Disconnected" -> setConnectedState(false, "Disconnected")
+                else -> {
+                    if (isConnected) setConnectedState(true) else setConnectedState(false, message.ifBlank { "Disconnected" })
+                }
             }
         }
     }
@@ -216,8 +218,8 @@ class MainActivity : Activity() {
     private fun buildStatsRow(): View = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER
-        uploadText = statText("⬆", "Upload", "0 KB")
-        downloadText = statText("⬇", "Download", "0 KB")
+        uploadText = statText("⬆", "Upload", "0 B")
+        downloadText = statText("⬇", "Download", "0 B")
         addView(uploadText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
             setMargins(0, 0, dp(6), 0)
         })
@@ -525,14 +527,26 @@ class MainActivity : Activity() {
         startStopButton.background = oval(Color.WHITE, GREEN, dp(3))
     }
 
-    private fun setActiveErrorState(message: String) {
-        connected = true
+    private fun setFailedState(message: String) {
+        connected = false
         connecting = false
-        setStatus(message, RED)
-        startStopButton.text = "STOP"
-        startStopButton.setTextColor(GREEN)
-        startStopButton.background = oval(Color.WHITE, GREEN, dp(3))
+        setStatus("Failed: ${message.removePrefix("Start failed: ")}", RED)
+        startStopButton.text = "START"
+        startStopButton.setTextColor(RED)
+        startStopButton.background = oval(Color.WHITE, RED, dp(3))
         timerHandler.removeCallbacks(timerRunnable)
+        durationText.text = "VPN Duration : 00:00:00"
+        uploadText.text = "⬆\nUpload\n0 B"
+        downloadText.text = "⬇\nDownload\n0 B"
+    }
+
+    private fun setStoppingState() {
+        connected = false
+        connecting = true
+        setStatus("Stopping", GRAY)
+        startStopButton.text = "STOP"
+        startStopButton.setTextColor(GRAY)
+        startStopButton.background = oval(Color.WHITE, GRAY, dp(3))
     }
 
     private fun setConnectedState(isConnected: Boolean, disconnectedStatus: String = "Disconnected") {
@@ -554,8 +568,8 @@ class MainActivity : Activity() {
             startStopButton.background = oval(Color.WHITE, RED, dp(3))
             timerHandler.removeCallbacks(timerRunnable)
             durationText.text = "VPN Duration : 00:00:00"
-            uploadText.text = "⬆\nUpload\n0 KB"
-            downloadText.text = "⬇\nDownload\n0 KB"
+            uploadText.text = "⬆\nUpload\n0 B"
+            downloadText.text = "⬇\nDownload\n0 B"
         }
     }
 

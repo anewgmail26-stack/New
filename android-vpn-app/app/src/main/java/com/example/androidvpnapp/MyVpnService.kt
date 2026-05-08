@@ -4,7 +4,6 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
@@ -16,9 +15,11 @@ import android.widget.Toast
 import java.io.IOException
 
 class MyVpnService : VpnService() {
+    private val stateLock = Any()
     private var vpnInterface: ParcelFileDescriptor? = null
     private lateinit var tunnelCoreManager: TunnelCoreManager
-    private var stopRequested = false
+    private var serviceState = ServiceState.Disconnected
+    private var connectThread: Thread? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -30,8 +31,8 @@ class MyVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "VPN service start command received: action=${intent?.action}, flags=$flags, startId=$startId.")
         when (intent?.action) {
-            ACTION_CONNECT -> safeConnect()
-            ACTION_DISCONNECT -> disconnect("Disconnected", stopService = true)
+            ACTION_CONNECT -> handleConnectAction()
+            ACTION_DISCONNECT -> handleDisconnectAction()
             else -> Log.w(TAG, "Ignoring unknown VPN service action: ${intent?.action}")
         }
         return START_NOT_STICKY
@@ -39,52 +40,87 @@ class MyVpnService : VpnService() {
 
     override fun onDestroy() {
         Log.i(TAG, "VPN service is being destroyed; releasing VPN and native resources.")
-        disconnect("Disconnected", stopService = false)
+        val shouldBroadcastDisconnect = synchronized(stateLock) {
+            serviceState == ServiceState.Connecting || serviceState == ServiceState.Connected || serviceState == ServiceState.Stopping
+        }
+        stopTunnelAndTun()
+        stopForegroundSafely()
+        if (shouldBroadcastDisconnect) {
+            setState(ServiceState.Disconnected)
+        }
         super.onDestroy()
     }
 
-    private fun safeConnect() {
-        stopRequested = false
-        try {
-            Log.i(TAG, "Starting VPN foreground notification before doing any blocking work.")
-            startForeground(NOTIFICATION_ID, buildNotification())
-            Log.i(TAG, "Foreground notification started.")
-            connect()
-        } catch (error: UnsatisfiedLinkError) {
-            handleStartFailure("native library could not be loaded: ${error.message}", error)
-        } catch (error: NoClassDefFoundError) {
-            handleStartFailure("native runtime class is missing: ${error.message}", error)
-        } catch (error: IllegalStateException) {
-            handleStartFailure(error.message ?: "illegal VPN service state", error)
-        } catch (error: IOException) {
-            handleStartFailure("I/O error while starting VPN: ${error.message}", error)
-        } catch (error: Throwable) {
-            handleStartFailure(error.message ?: error::class.java.simpleName, error)
+    private fun handleConnectAction() {
+        synchronized(stateLock) {
+            when (serviceState) {
+                ServiceState.Connecting, ServiceState.Connected -> {
+                    Log.i(TAG, "Ignoring duplicate connect request while state=$serviceState.")
+                    broadcastStateLocked(serviceState)
+                    return
+                }
+                ServiceState.Stopping -> {
+                    Log.i(TAG, "Ignoring connect request while stop is in progress.")
+                    broadcastStateLocked(serviceState)
+                    return
+                }
+                ServiceState.Disconnected, ServiceState.Failed -> {
+                    serviceState = ServiceState.Connecting
+                }
+            }
         }
+
+        startForegroundSafely(ServiceState.Connecting)
+        setState(ServiceState.Connecting)
+        connectThread = Thread({ connectInBackground() }, "vpn-connect").apply { start() }
     }
 
-    private fun connect() {
-        val configStore = ConfigStore(applicationContext)
-        val profile = configStore.loadSelectedProfile()
-        Log.i(TAG, "VPN connect flow started; selectedProfilePresent=${profile != null}.")
+    private fun handleDisconnectAction() {
+        synchronized(stateLock) {
+            when (serviceState) {
+                ServiceState.Disconnected -> {
+                    Log.i(TAG, "Ignoring duplicate disconnect request while already disconnected.")
+                    broadcastStateLocked(ServiceState.Disconnected)
+                    stopSelf()
+                    return
+                }
+                ServiceState.Stopping -> {
+                    Log.i(TAG, "Ignoring duplicate disconnect request while stop is already in progress.")
+                    broadcastStateLocked(ServiceState.Stopping)
+                    return
+                }
+                ServiceState.Connecting, ServiceState.Connected, ServiceState.Failed -> {
+                    serviceState = ServiceState.Stopping
+                }
+            }
+        }
 
+        setState(ServiceState.Stopping)
+        Thread({
+            stopTunnelAndTun()
+            stopForegroundSafely()
+            setState(ServiceState.Disconnected)
+            stopSelf()
+        }, "vpn-disconnect").start()
+    }
+
+    private fun connectInBackground() {
         try {
-            ensureTunInterface(configStore)
-            broadcastStatus("Connecting", true)
+            val configStore = ConfigStore(applicationContext)
+            val profile = configStore.loadSelectedProfile()
+            Log.i(TAG, "VPN connect flow started; selectedProfilePresent=${profile != null}.")
 
             if (profile == null) {
-                handleStartFailure(TunnelCoreManager.CoreStatus.CONFIG_MISSING.label, null)
+                failConnect(TunnelCoreManager.CoreStatus.CONFIG_MISSING.label, null)
                 return
             }
 
             Log.i(
                 TAG_PROFILE,
-                "Config parsed: id=${profile.server.id}, protocol=vless, host=${profile.server.host}, port=${profile.server.port}, network=${profile.server.type}, security=${profile.server.security}, sni=${profile.server.sni}, wsPath=${profile.server.wsPath}, allowInsecure=${profile.server.allowInsecure}."
+                "Config parsed: id=${profile.server.id}, protocol=vless, host=${profile.server.host}, port=${profile.server.port}, network=${profile.server.type}, security=${profile.server.security}, wsPath=${profile.server.wsPath}, wsHost=${profile.server.hostHeader.ifBlank { profile.server.host }}."
             )
-            Log.i(
-                TAG_PROFILE,
-                "VLESS settings parsed: uuid=${profile.server.uuid}, encryption=${profile.server.encryption}, flow=${profile.server.flow.ifBlank { "<none>" }}, wsHost=${profile.server.hostHeader.ifBlank { profile.server.sni.ifBlank { profile.server.host } }}."
-            )
+
+            ensureTunInterface(configStore)
 
             val coreStatus = tunnelCoreManager.getStatus(profile)
             Log.i(TAG, "Native runtime preflight status: $coreStatus.")
@@ -92,48 +128,59 @@ class MyVpnService : VpnService() {
                 coreStatus == TunnelCoreManager.CoreStatus.GOJNI_NOT_INSTALLED ||
                 coreStatus == TunnelCoreManager.CoreStatus.START_API_NOT_WIRED
             ) {
-                handleStartFailure(coreStatus.label, null)
+                failConnect(coreStatus.label, null)
                 return
             }
 
             val tun = vpnInterface
             if (tun == null) {
-                handleStartFailure("Android VPN TUN interface was not established.", null)
+                failConnect("Android VPN TUN interface was not established.", null)
                 return
             }
 
-            Log.i(TAG, "Starting native V2Ray runtime and tun2socks.")
+            Log.i(TAG, "Starting libv2ray and tun2socks for Android TUN -> SOCKS 127.0.0.1:10808 -> VLESS outbound forwarding.")
             val result = tunnelCoreManager.start(profile, tun) { socket -> protect(socket) }
             if (result.isFailure) {
-                handleStartFailure(result.exceptionOrNull()?.message ?: "native runtime did not start", result.exceptionOrNull())
+                failConnect(result.exceptionOrNull()?.message ?: "native runtime did not start", result.exceptionOrNull())
                 return
             }
 
-            Log.i(TAG, "Native runtime and TUN routing started.")
-            broadcastStatus("Connected", true)
+            synchronized(stateLock) {
+                if (serviceState == ServiceState.Stopping || serviceState == ServiceState.Disconnected) {
+                    Log.i(TAG, "Connect completed after stop was requested; tearing started tunnel down.")
+                    stopTunnelAndTun()
+                    return
+                }
+                serviceState = ServiceState.Connected
+                vpnInterface = null // CoreBridge detached the TUN fd for tun2socks; the process now owns it.
+            }
+            Log.i(TAG, "Native runtime and TUN routing started successfully.")
+            startForegroundSafely(ServiceState.Connected)
+            setState(ServiceState.Connected)
         } catch (error: UnsatisfiedLinkError) {
-            handleStartFailure("native library could not be loaded: ${error.message}", error)
+            failConnect("native library could not be loaded: ${error.message}", error)
         } catch (error: NoClassDefFoundError) {
-            handleStartFailure("native runtime class is missing: ${error.message}", error)
+            failConnect("native runtime class is missing: ${error.message}", error)
         } catch (error: IllegalStateException) {
-            handleStartFailure(error.message ?: "illegal VPN service state", error)
+            failConnect(error.message ?: "illegal VPN service state", error)
         } catch (error: IOException) {
-            handleStartFailure("I/O error while starting VPN: ${error.message}", error)
+            failConnect("I/O error while starting VPN: ${error.message}", error)
         } catch (error: Throwable) {
-            handleStartFailure(error.message ?: error::class.java.simpleName, error)
+            failConnect(error.message ?: error::class.java.simpleName, error)
         }
     }
 
     private fun ensureTunInterface(configStore: ConfigStore) {
         if (vpnInterface != null) {
-            Log.i(TAG, "Reusing existing Android VPN TUN interface while reconnecting.")
+            Log.i(TAG, "Reusing existing Android VPN TUN interface while connecting.")
             return
         }
 
-        Log.i(TAG, "Starting Android VPN TUN interface setup.")
+        Log.i(TAG, "Establishing Android VPN TUN interface.")
         val builder = Builder()
             .setSession(getString(R.string.app_name))
-            .addAddress("10.10.0.2", 32)
+            .setMtu(VPN_MTU)
+            .addAddress(VPN_ADDRESS, VPN_PREFIX_LENGTH)
             .addRoute("0.0.0.0", 0)
 
         if (configStore.loadDnsEnabled()) {
@@ -143,22 +190,84 @@ class MyVpnService : VpnService() {
         }
 
         vpnInterface = builder.establish()
-        if (vpnInterface == null) {
-            throw IllegalStateException("VPN permission was not available or the TUN interface could not be established.")
-        }
-        Log.i(TAG, "TUN interface established; Android VPN icon should remain visible until the user disconnects.")
+            ?: throw IllegalStateException("VPN permission was not available or the TUN interface could not be established.")
+        Log.i(TAG, "TUN interface established with $VPN_ADDRESS/$VPN_PREFIX_LENGTH, default IPv4 route, and MTU $VPN_MTU.")
     }
 
-    private fun handleStartFailure(reason: String, error: Throwable?) {
+    private fun failConnect(reason: String, error: Throwable?) {
         val message = if (reason.startsWith("Start failed:")) reason else "Start failed: $reason"
         if (error == null) {
             Log.e(TAG, message)
         } else {
             Log.e(TAG, message, error)
         }
+        stopTunnelAndTun()
+        stopForegroundSafely()
         showToast(message)
-        Log.e(TAG, "Keeping VPN service and TUN interface alive after start failure so the VPN icon does not disappear immediately. User must press STOP to disconnect.")
-        broadcastStatus(message, true)
+        setState(ServiceState.Failed, message)
+        stopSelf()
+    }
+
+    private fun stopTunnelAndTun() {
+        try {
+            tunnelCoreManager.stop()
+        } catch (error: Throwable) {
+            Log.w(TAG, "Error stopping native runtime.", error)
+        }
+
+        val tunToClose = synchronized(stateLock) {
+            vpnInterface.also { vpnInterface = null }
+        }
+        if (tunToClose != null) {
+            try {
+                tunToClose.close()
+            } catch (error: IOException) {
+                Log.w(TAG, "Error closing VPN interface.", error)
+            }
+        } else {
+            Log.i(TAG, "VPN interface was already detached or closed.")
+        }
+    }
+
+    private fun startForegroundSafely(state: ServiceState) {
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification(state))
+            Log.i(TAG, "Foreground notification shown for state=$state.")
+        } catch (error: Throwable) {
+            Log.e(TAG, "Could not start VPN foreground notification.", error)
+            throw error
+        }
+    }
+
+    private fun stopForegroundSafely() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (error: Throwable) {
+            Log.w(TAG, "Error stopping foreground VPN notification.", error)
+        }
+    }
+
+    private fun setState(state: ServiceState, failureReason: String? = null) {
+        synchronized(stateLock) {
+            serviceState = state
+            broadcastStateLocked(state, failureReason)
+        }
+    }
+
+    private fun broadcastStateLocked(state: ServiceState, failureReason: String? = null) {
+        sendBroadcast(
+            Intent(ACTION_STATUS)
+                .setPackage(packageName)
+                .putExtra(EXTRA_STATE, state.wireName)
+                .putExtra(EXTRA_STATUS_MESSAGE, failureReason ?: state.wireName)
+                .putExtra(EXTRA_FAILURE_REASON, failureReason.orEmpty())
+                .putExtra(EXTRA_CONNECTED, state == ServiceState.Connected)
+        )
     }
 
     private fun showToast(message: String) {
@@ -167,59 +276,7 @@ class MyVpnService : VpnService() {
         }
     }
 
-    private fun broadcastStatus(message: String, connected: Boolean) {
-        sendBroadcast(
-            Intent(ACTION_STATUS)
-                .setPackage(packageName)
-                .putExtra(EXTRA_STATUS_MESSAGE, message)
-                .putExtra(EXTRA_CONNECTED, connected)
-        )
-    }
-
-    private fun disconnect(statusMessage: String = "Disconnected", stopService: Boolean = true) {
-        if (stopRequested && stopService) {
-            Log.i(TAG, "Disconnect already requested; ignoring duplicate stop request.")
-            return
-        }
-        stopRequested = stopService
-        Log.i(TAG, "Disconnecting VPN service; statusMessage=$statusMessage, stopService=$stopService.")
-        try {
-            tunnelCoreManager.stop()
-        } catch (error: UnsatisfiedLinkError) {
-            Log.w(TAG, "Error stopping native runtime: unsatisfied link.", error)
-        } catch (error: NoClassDefFoundError) {
-            Log.w(TAG, "Error stopping native runtime: missing class.", error)
-        } catch (error: IllegalStateException) {
-            Log.w(TAG, "Error stopping native runtime: illegal state.", error)
-        } catch (error: IOException) {
-            Log.w(TAG, "Error stopping native runtime: I/O error.", error)
-        } catch (error: Throwable) {
-            Log.w(TAG, "Error stopping native runtime.", error)
-        }
-
-        if (vpnInterface != null) {
-            try {
-                vpnInterface?.close()
-            } catch (error: IOException) {
-                Log.w(TAG, "Error closing VPN interface.", error)
-            } finally {
-                vpnInterface = null
-            }
-        } else {
-            Log.i(TAG, "VPN interface was already detached or closed.")
-        }
-        broadcastStatus(statusMessage, false)
-        try {
-            stopForegroundCompat()
-        } catch (error: Throwable) {
-            Log.w(TAG, "Error stopping foreground VPN notification.", error)
-        }
-        if (stopService) {
-            stopSelf()
-        }
-    }
-
-    private fun buildNotification(): Notification {
+    private fun buildNotification(state: ServiceState): Notification {
         val openAppIntent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -238,9 +295,9 @@ class MyVpnService : VpnService() {
         return builder
             .setSmallIcon(R.drawable.ic_vpn_notification)
             .setContentTitle(getString(R.string.vpn_notification_title))
-            .setContentText(getString(R.string.vpn_notification_text))
+            .setContentText("VPN state: ${state.wireName}")
             .setContentIntent(pendingIntent)
-            .setOngoing(true)
+            .setOngoing(state == ServiceState.Connecting || state == ServiceState.Connected)
             .build()
     }
 
@@ -256,13 +313,12 @@ class MyVpnService : VpnService() {
         }
     }
 
-    private fun stopForegroundCompat() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
-            @Suppress("DEPRECATION")
-            stopForeground(true)
-        }
+    private enum class ServiceState(val wireName: String) {
+        Connecting("Connecting"),
+        Connected("Connected"),
+        Failed("Failed"),
+        Stopping("Stopping"),
+        Disconnected("Disconnected")
     }
 
     companion object {
@@ -271,8 +327,13 @@ class MyVpnService : VpnService() {
         const val ACTION_STATUS = "com.example.androidvpnapp.action.STATUS"
         const val EXTRA_STATUS_MESSAGE = "status_message"
         const val EXTRA_CONNECTED = "connected"
+        const val EXTRA_STATE = "state"
+        const val EXTRA_FAILURE_REASON = "failure_reason"
         private const val CHANNEL_ID = "vpn_connection"
         private const val NOTIFICATION_ID = 1001
+        private const val VPN_ADDRESS = "10.10.0.2"
+        private const val VPN_PREFIX_LENGTH = 32
+        private const val VPN_MTU = 1500
         private const val TAG = "MyVpnService"
         private const val TAG_PROFILE = "VpnProfile"
     }
