@@ -413,8 +413,8 @@ class MainActivity : Activity() {
     private fun showToolsDialog() {
         val coreManager = TunnelCoreManager(applicationContext)
         val coreStatus = coreManager.getStatusLabel(configStore.loadSelectedProfile())
-        val installText = if (coreManager.areNativeCoreFilesInstalled()) {
-            "Xray core present, tun2socks present, and gojni runtime wrapper present. The app can start libv2ray and route the Android TUN interface through tun2socks.\n${coreManager.describeNativeCoreInstall()}"
+        val installText = if (coreManager.areNativeRuntimeFilesInstalled()) {
+            "V2Ray runtime, tun2socks, and the gojni wrapper are present. The app can start libv2ray and route the Android TUN interface through tun2socks.\n${coreManager.describeNativeCoreInstall()}"
         } else {
             "Missing required native libraries.\n${coreManager.describeNativeCoreInstall()}"
         }
@@ -498,7 +498,7 @@ class MainActivity : Activity() {
         val profile = configStore.loadSelectedProfile()
         val coreManager = TunnelCoreManager(applicationContext)
         val coreStatus = coreManager.getStatus(profile)
-        Log.i(TAG, "Pre-start profile/core status: profilePresent=${profile != null}, coreStatus=$coreStatus. Service will handle failures after foreground/TUN startup.")
+        Log.i(TAG, "Pre-start profile/runtime status: profilePresent=${profile != null}, runtimeStatus=$coreStatus. Service will handle failures after foreground/TUN startup.")
 
         val permissionIntent = VpnService.prepare(this)
         if (permissionIntent != null) {

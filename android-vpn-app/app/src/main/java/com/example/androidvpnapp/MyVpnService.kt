@@ -87,9 +87,8 @@ class MyVpnService : VpnService() {
             )
 
             val coreStatus = tunnelCoreManager.getStatus(profile)
-            Log.i(TAG, "Native core preflight status: $coreStatus.")
-            if (coreStatus == TunnelCoreManager.CoreStatus.CORE_NOT_INSTALLED ||
-                coreStatus == TunnelCoreManager.CoreStatus.TUN2SOCKS_NOT_INSTALLED ||
+            Log.i(TAG, "Native runtime preflight status: $coreStatus.")
+            if (coreStatus == TunnelCoreManager.CoreStatus.TUN2SOCKS_NOT_INSTALLED ||
                 coreStatus == TunnelCoreManager.CoreStatus.GOJNI_NOT_INSTALLED ||
                 coreStatus == TunnelCoreManager.CoreStatus.START_API_NOT_WIRED
             ) {
@@ -103,14 +102,14 @@ class MyVpnService : VpnService() {
                 return
             }
 
-            Log.i(TAG, "Starting native core and tun2socks.")
+            Log.i(TAG, "Starting native V2Ray runtime and tun2socks.")
             val result = tunnelCoreManager.start(profile, tun) { socket -> protect(socket) }
             if (result.isFailure) {
-                handleStartFailure(result.exceptionOrNull()?.message ?: "native core did not start", result.exceptionOrNull())
+                handleStartFailure(result.exceptionOrNull()?.message ?: "native runtime did not start", result.exceptionOrNull())
                 return
             }
 
-            Log.i(TAG, "Core started and TUN routing started.")
+            Log.i(TAG, "Native runtime and TUN routing started.")
             broadcastStatus("Connected", true)
         } catch (error: UnsatisfiedLinkError) {
             handleStartFailure("native library could not be loaded: ${error.message}", error)
